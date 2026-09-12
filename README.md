@@ -109,7 +109,8 @@ deepl-quick-translate [选项]
 ```
 
 配置文件在 `~/.config/io.github.panwenzheng.DeepLQuickTranslate/config.json`（只放非敏感项），
-自启动文件为 `~/.config/autostart/deepl-quick-translate.desktop`。
+自启动文件为 `~/.config/autostart/io.github.panwenzheng.DeepLQuickTranslate.desktop`
+（在设置里打开「开机自动启动」时创建，内容里的 `Exec` 指向 `/usr/bin/deepl-quick-translate --background`）。
 
 ## 已知边界
 
