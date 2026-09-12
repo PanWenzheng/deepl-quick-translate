@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=DeepL 快捷翻译
+Name[en]=DeepL Quick Translate
+GenericName=Translation
+Comment=比打开浏览器更快的 DeepL 桌面入口
+Comment[en]=A faster DeepL entry point for the desktop
+Exec=deepl-quick-translate --toggle
+Icon=io.github.panwenzheng.DeepLQuickTranslate
+Terminal=false
+Categories=Utility;GTK;
+Keywords=translate;translation;deepl;翻译;DeepL;
+StartupNotify=false
+DBusActivatable=true

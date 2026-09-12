@@ -1,0 +1,110 @@
+"""配置解析与快捷键字符串转换的单元测试（标准库 unittest，无第三方依赖）。"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from app.config.manager import Config, ConfigManager, config_dir
+from app.constants import DEFAULT_ENDPOINT, DEFAULT_SHORTCUT_ACCEL
+from app.shortcuts.accels import (
+    gtk_accel_to_display,
+    gtk_accel_to_xdg,
+    is_valid_gtk_accel,
+)
+
+
+class ConfigDefaultsTest(unittest.TestCase):
+    def test_defaults(self) -> None:
+        config = Config()
+        self.assertEqual(config.endpoint, DEFAULT_ENDPOINT)
+        self.assertTrue(config.close_after_copy)
+        self.assertFalse(config.start_on_login)
+        self.assertTrue(config.hide_on_focus_loss)
+        self.assertEqual(config.shortcut.preferred_trigger, DEFAULT_SHORTCUT_ACCEL)
+        self.assertEqual(config.shortcut.backend, "portal")
+        self.assertIsNone(config.shortcut.gsettings_path)
+
+    def test_missing_file_gives_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ConfigManager(Path(tmp) / "config.json")
+            self.assertEqual(manager.load().endpoint, DEFAULT_ENDPOINT)
+
+    def test_broken_json_gives_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text("{ not json", encoding="utf-8")
+            self.assertEqual(ConfigManager(path).load().endpoint, DEFAULT_ENDPOINT)
+
+    def test_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            manager = ConfigManager(path)
+            config = Config()
+            config.shortcut.gsettings_path = (
+                "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom3/"
+            )
+            config.close_after_copy = False
+            config.log_level = "DEBUG"
+            self.assertTrue(manager.save(config))
+
+            loaded = manager.load()
+            self.assertEqual(loaded.shortcut.gsettings_path, config.shortcut.gsettings_path)
+            self.assertFalse(loaded.close_after_copy)
+            self.assertEqual(loaded.log_level, "DEBUG")
+
+            # 保存的内容里不应出现任何凭据字段
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("api_key", raw)
+            self.assertNotIn("api_key", raw.get("shortcut", {}))
+
+    def test_invalid_values_fall_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "close_after_copy": "yes",
+                        "endpoint": 42,
+                        "shortcut": {"backend": "unknown", "preferred_trigger": ""},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = ConfigManager(path).load()
+            self.assertTrue(loaded.close_after_copy)
+            self.assertEqual(loaded.endpoint, DEFAULT_ENDPOINT)
+            self.assertEqual(loaded.shortcut.backend, "portal")
+            self.assertEqual(loaded.shortcut.preferred_trigger, DEFAULT_SHORTCUT_ACCEL)
+
+    def test_unknown_keys_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({"future_option": True}), encoding="utf-8")
+            self.assertTrue(ConfigManager(path).load().close_after_copy)
+
+    def test_config_dir_follows_xdg(self) -> None:
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/tmp/xdg-test"}):
+            self.assertTrue(str(config_dir()).startswith("/tmp/xdg-test"))
+
+
+class AccelConversionTest(unittest.TestCase):
+    def test_gtk_to_xdg(self) -> None:
+        self.assertEqual(gtk_accel_to_xdg("<Control><Alt>space"), "CTRL+ALT+space")
+        self.assertEqual(gtk_accel_to_xdg("<Super>t"), "LOGO+t")
+
+    def test_gtk_to_display(self) -> None:
+        self.assertEqual(gtk_accel_to_display("<Control><Alt>space"), "Ctrl+Alt+Space")
+
+    def test_validity(self) -> None:
+        self.assertTrue(is_valid_gtk_accel("<Control><Alt>space"))
+        self.assertFalse(is_valid_gtk_accel("<Control><Alt>"))
+        self.assertFalse(is_valid_gtk_accel(""))
+
+
+if __name__ == "__main__":
+    unittest.main()
