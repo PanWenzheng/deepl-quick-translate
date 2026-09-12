@@ -61,6 +61,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._last_present_us = 0
         self._guard_active = False
         self._guard_deadline_us = 0
+        self._swallowed_keys = 0
         self._trigger_keyval = self._parse_trigger_keyval()
 
         _install_css()
@@ -76,6 +77,10 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._entry.set_hexpand(True)
         self._entry.set_placeholder_text("输入要翻译的内容")
         self._entry.add_css_class("translator-input")
+        # 提交走 Entry 的 activate 信号：输入法组合（preedit）期间 GTK 的 IM context
+        # 会先消费 Enter 用于"上屏"当前候选/原始字母，activate 不会被触发，
+        # 因此不会出现"输入法还没确认就提交翻译"的误判。
+        self._entry.connect("activate", self._on_entry_activate)
 
         self._settings_button = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
         self._settings_button.set_has_frame(False)
@@ -108,7 +113,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         surface.append(self._hint)
         self.set_child(surface)
 
-        self._install_key_controller()
+        self._install_key_controllers()
 
     # ------------------------------------------------------------------ 行为
 
@@ -117,41 +122,63 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         ok, keyval, _mods = Gtk.accelerator_parse(self._config.shortcut.preferred_trigger)
         return keyval if ok else Gdk.KEY_space
 
-    def _install_key_controller(self) -> None:
-        controller = Gtk.EventControllerKey()
-        # 必须用捕获阶段：输入框（GtkEntry）会先消费空格这类文本按键，
-        # 冒泡阶段的控制器根本看不到它们，也就没法拦掉热键泄漏的那个按键。
-        controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        controller.connect("key-pressed", self._on_key_pressed)
-        self.add_controller(controller)
+    def _install_key_controllers(self) -> None:
+        # 捕获阶段：只负责吞掉热键泄漏的按键。
+        # 必须用捕获阶段，因为输入框会先消费空格这类文本按键，
+        # 冒泡阶段的控制器根本看不到它们。
+        guard = Gtk.EventControllerKey()
+        guard.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        guard.connect("key-pressed", self._on_key_pressed_capture)
+        self.add_controller(guard)
 
-    def _on_key_pressed(self, _controller, keyval, _keycode, _state) -> bool:
+        # 冒泡阶段：只处理 Esc。放在冒泡阶段是有意的——输入法组合中按 Esc
+        # 应当先取消候选，此时事件已被输入法消费，不会传到这里，窗口也就不关。
+        bubble = Gtk.EventControllerKey()
+        bubble.connect("key-pressed", self._on_key_pressed_bubble)
+        self.add_controller(bubble)
+
+    def _on_key_pressed_capture(self, _controller, keyval, _keycode, _state) -> bool:
         now = GLib.get_monotonic_time()
         if self._guard_active:
             if now >= self._guard_deadline_us:
-                self._guard_active = False
+                self._end_key_guard()
             elif keyval == self._trigger_keyval:
-                log.debug("window: swallowed leaked trigger key (hotkey spillover)")
+                # 按住热键时会被系统自动重复成一长串，这里只计数，结束时汇总一条日志
+                self._swallowed_keys += 1
                 return True
             else:
                 # 用户已经开始正常输入，守卫解除
-                self._guard_active = False
+                self._end_key_guard()
+        return False
+
+    def _end_key_guard(self) -> None:
+        if self._guard_active and self._swallowed_keys:
+            log.debug(
+                "window: swallowed %d leaked trigger key event(s)", self._swallowed_keys
+            )
+        self._guard_active = False
+        self._swallowed_keys = 0
+
+    def _on_key_pressed_bubble(self, _controller, keyval, _keycode, _state) -> bool:
         if keyval == Gdk.KEY_Escape:
             log.debug("window: Esc pressed, hiding")
             self.hide()
             return True
-        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-            # 提交逻辑在 M3 接入，这里只记录，避免误以为已实现
-            log.debug("window: submit requested (translation lands in M3)")
-            return True
         return False
+
+    def _on_entry_activate(self, _entry) -> None:
+        """Enter 提交（由输入法确认提交后的再次回车触发）。翻译逻辑在 M3 接入。"""
+        log.debug("window: submit requested (translation lands in M3)")
 
     def present_with_focus(self, *, arm_key_guard: bool = False) -> None:
         """唤起窗口并确保输入框拿到焦点（后续步骤才能读剪贴板）。"""
         self._last_present_us = GLib.get_monotonic_time()
         if arm_key_guard:
             self._guard_active = True
+            self._swallowed_keys = 0
             self._guard_deadline_us = self._last_present_us + TRIGGER_KEY_GUARD_US
         self.present()
         self._entry.grab_focus()
+        # 选中已有内容：用户直接键入即可整体替换（M2 会用剪贴板内容整体覆盖）
+        self._entry.select_region(0, -1)
         log.debug("window: presented")
