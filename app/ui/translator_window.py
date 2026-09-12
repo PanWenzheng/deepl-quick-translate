@@ -29,6 +29,8 @@ TRIGGER_KEY_GUARD_MAX_US = 30_000_000
 # 吞掉的按键超过这个数量就基本可以断定是"按键卡在按下状态"，记一条警告便于排查
 TRIGGER_KEY_SWALLOW_WARN = 500
 
+HINT_TEXT = "Enter 翻译 · Shift+Enter 换行 · Ctrl+C 复制并关闭 · Esc 关闭"
+
 CSS = b"""
 .translator-surface {
     background-color: @theme_bg_color;
@@ -87,11 +89,13 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         config: Config,
         on_submit: Callable[[str], None] | None = None,
         on_dismiss: Callable[[], None] | None = None,
+        on_open_settings: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(application=application, title=APP_NAME)
         self._config = config
         self._on_submit = on_submit
         self._on_dismiss = on_dismiss
+        self._on_open_settings = on_open_settings
         self._busy = False
         self._clipboard = ClipboardManager()
         self._last_present_us = 0
@@ -147,6 +151,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._settings_button = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
         self._settings_button.set_has_frame(False)
         self._settings_button.set_tooltip_text("设置")
+        self._settings_button.connect("clicked", lambda _button: self._open_settings())
 
         icon = Gtk.Image.new_from_icon_name("system-search-symbolic")
         icon.set_valign(Gtk.Align.START)
@@ -177,7 +182,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._result_separator = Gtk.Separator()
         self._result_separator.set_visible(False)
 
-        self._hint = Gtk.Label(label="Enter 翻译 · Shift+Enter 换行 · Esc 关闭")
+        self._hint = Gtk.Label(label=HINT_TEXT)
         self._hint.set_xalign(0)
         self._hint.add_css_class("translator-hint")
 
@@ -322,7 +327,42 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             log.debug("window: Esc pressed, hiding")
             self._dismiss()
             return True
+        # Ctrl+C：仅当"有译文、且输入框里没有选中文字"时才解释为复制译文
+        if (
+            keyval in (Gdk.KEY_c, Gdk.KEY_C)
+            and _state & Gdk.ModifierType.CONTROL_MASK
+            and not _state & Gdk.ModifierType.SHIFT_MASK
+        ):
+            return self._copy_result_if_appropriate()
         return False
+
+    def _copy_result_if_appropriate(self) -> bool:
+        """复制译文（规格 FR-RESULT-4/6）。返回 True 表示已消费此次 Ctrl+C。"""
+        result = self._result_text.get_text()
+        if not result or self._busy or not self._result_box.get_visible():
+            return False
+        if self._buffer.get_has_selection():
+            # 用户在输入框里选了文字，交回系统默认的复制行为
+            return False
+        self._clipboard.write_text(result)
+        self._show_copied_feedback()
+        if self._config.close_after_copy:
+            self._dismiss()
+        return True
+
+    def _show_copied_feedback(self) -> None:
+        self._hint.set_text("已复制")
+
+        def restore() -> bool:
+            self._hint.set_text(HINT_TEXT)
+            return GLib.SOURCE_REMOVE
+
+        GLib.timeout_add(1200, restore)
+
+    def _open_settings(self) -> None:
+        self._dismiss()
+        if self._on_open_settings is not None:
+            self._on_open_settings()
 
     def _im_wants_key(self, controller) -> bool:
         """询问输入法要不要这个按键（组合中会返回 True）。

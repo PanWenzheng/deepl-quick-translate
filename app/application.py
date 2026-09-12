@@ -18,6 +18,7 @@ from .deepl.errors import TranslationError
 from .deepl.service import TranslationService
 from .logging_setup import setup_logging
 from .shortcuts.manager import ShortcutManager
+from .ui.settings_window import SettingsWindow
 from .ui.translator_window import TranslatorWindow
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class TranslatorApplication(Adw.Application):
         self._secrets = SecretManager()
         self._config: Config = Config()
         self._window: TranslatorWindow | None = None
+        self._settings_window: SettingsWindow | None = None
         self._shortcuts: ShortcutManager | None = None
         self._runner: AsyncRunner | None = None
         self._service: TranslationService | None = None
@@ -90,6 +92,7 @@ class TranslatorApplication(Adw.Application):
         )
         # 放在空闲回调里注册，避免拖慢启动
         GLib.idle_add(self._register_shortcuts)
+        GLib.idle_add(self._ensure_autostart)
 
         for signum in (signal.SIGINT, signal.SIGTERM):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signum, self._on_signal)
@@ -128,7 +131,7 @@ class TranslatorApplication(Adw.Application):
             self.quit()
             return 0
         if "--settings" in args:
-            log.info("settings window arrives in M4")
+            self.open_settings()
             return 0
         if "--background" in args:
             log.info("started in background; waiting for the global shortcut")
@@ -185,6 +188,7 @@ class TranslatorApplication(Adw.Application):
                 self._config,
                 on_submit=self._on_submit,
                 on_dismiss=self._on_dismiss,
+                on_open_settings=self.open_settings,
             )
         self._window.present_with_focus(
             arm_key_guard=arm_key_guard, activation_token=activation_token
@@ -239,6 +243,49 @@ class TranslatorApplication(Adw.Application):
     def _on_dismiss(self) -> None:
         """窗口隐藏（Esc / 失焦）时调用。"""
         self._cancel_current_request()
+
+    # ------------------------------------------------------------------ 设置
+
+    def open_settings(self) -> None:
+        if self._settings_window is None:
+            log.debug("settings: creating window")
+            self._settings_window = SettingsWindow(
+                self,
+                config=self._config,
+                secrets=self._secrets,
+                on_config_changed=self._save_config,
+                on_shortcut_changed=self._apply_shortcut_change,
+                check_connection=self._check_connection,
+            )
+        log.debug("settings: presenting window")
+        self._settings_window.present()
+
+    def _save_config(self) -> None:
+        self._config_manager.save(self._config)
+
+    def _apply_shortcut_change(self) -> None:
+        """快捷键被改动：先注销旧的，再按新键重新注册。"""
+        self._save_config()
+        if self._shortcuts is not None:
+            self._shortcuts.unregister()
+            self._shortcuts.register(self._on_shortcut_status)
+
+    def _ensure_autostart(self) -> bool:
+        """按配置补齐开机自启动文件（默认关闭，只有用户开启过才创建）。"""
+        from .config import autostart
+
+        if self._config.start_on_login and not autostart.is_enabled():
+            autostart.set_enabled(True)
+        return GLib.SOURCE_REMOVE
+
+    def _check_connection(self, done) -> None:
+        """设置页的 Test Connection：走 /v2/usage，不消耗翻译额度。"""
+        if self._runner is None or self._service is None:
+            done(None, TranslationError("unexpected", detail="service unavailable"))
+            return
+        self._runner.submit(
+            self._service.check_connection(), lambda result, error: done(result, error)
+        )
 
     def _on_signal(self) -> bool:
         log.info("signal received; quitting")
