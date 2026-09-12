@@ -175,6 +175,10 @@ class TranslatorApplication(Adw.Application):
 
         display = Gdk.Display.get_default()
         log.info("display backend: %s", type(display).__name__ if display else "none")
+        log.debug(
+            "identity: prgname=%s application_name=%s app_id=%s",
+            GLib.get_prgname(), GLib.get_application_name(), APP_ID,
+        )
 
     def _on_shortcut_status(self, ok: bool, error: str | None) -> None:
         self.shortcut_ok = ok
@@ -328,5 +332,10 @@ class TranslatorApplication(Adw.Application):
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 显式设定程序名 = 应用 ID：桌面环境靠它把窗口与 .desktop 匹配起来取图标。
+    # 否则以 `python3 -m app` 启动时程序名是 python3，Shell 匹配不上，Dock 里只能画
+    # 一个通用占位图标（表现就是"图标是黑的"）。
+    GLib.set_prgname(APP_ID)
+    GLib.set_application_name(APP_NAME)
     app = TranslatorApplication()
     return app.run(argv if argv is not None else sys.argv)
