@@ -6,6 +6,10 @@ from __future__ import annotations
 KIND_MESSAGES: dict[str, tuple[str, str]] = {
     "no_api_key": ("API key required", "请先设置 DeepL API Key（./run.sh --set-api-key）"),
     "auth": ("Translation failed", "API Key 无效或缺少权限，请检查 API Key"),
+    "endpoint_mismatch": (
+        "Wrong endpoint",
+        "Endpoint 与账户类型不匹配：Free 账户请用 api-free.deepl.com，Pro 账户用 api.deepl.com",
+    ),
     "bad_request": ("Translation failed", "请求参数无效（属程序缺陷，不应出现）"),
     "unexpected": ("Translation failed", "收到意外的服务端响应"),
     "too_large": ("Text too long", "文本超出 DeepL 单次上限（128 KiB）"),

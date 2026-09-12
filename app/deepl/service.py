@@ -7,6 +7,7 @@ import unicodedata
 
 from ..config.manager import Config
 from ..config.secret import SecretManager
+from ..constants import ENDPOINT_FREE, ENDPOINT_PRO
 from .client import DeepLClient, TranslationResult
 from .errors import TranslationError
 
@@ -90,6 +91,7 @@ class TranslationService:
         api_key = self._secrets.lookup()
         if not api_key:
             raise TranslationError("no_api_key")
+        self._check_endpoint_matches_key(api_key)
 
         source_lang, target_lang = detect_direction(text)
         log.debug(
@@ -106,8 +108,24 @@ class TranslationService:
         api_key = self._secrets.lookup()
         if not api_key:
             raise TranslationError("no_api_key")
+        self._check_endpoint_matches_key(api_key)
         client = await self._get_client(api_key)
         return await client.check_usage()
+
+    def _check_endpoint_matches_key(self, api_key: str) -> None:
+        """本地先做一次便宜的校验：DeepL 的 Free key 以 ':fx' 结尾。
+
+        端点配错时官方会返回 403 且文案是 Wrong endpoint，但那要等一次网络往返；
+        这种不匹配在本地就能判定，直接给用户更准确的提示。
+        """
+        is_free_key = api_key.endswith(":fx")
+        endpoint = self._config.endpoint
+        if is_free_key and endpoint == ENDPOINT_PRO:
+            log.warning("deepl: free key configured with the pro endpoint")
+            raise TranslationError("endpoint_mismatch")
+        if not is_free_key and endpoint == ENDPOINT_FREE:
+            log.warning("deepl: pro key configured with the free endpoint")
+            raise TranslationError("endpoint_mismatch")
 
     async def aclose(self) -> None:
         if self._client is not None:

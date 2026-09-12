@@ -20,8 +20,24 @@ Spotlight 风格窗口骨架、热键按键守卫、激活去抖。M2 起接入�
 ./run.sh --background      # 后台常驻，等待 Ctrl+Alt+Space
 ./run.sh --toggle          # 唤起窗口
 ./run.sh --quit            # 退出并注销快捷键
+./run.sh --set-api-key     # 把 DeepL API Key 写进系统密钥环（输入不回显）
 python3 -m unittest discover -s tests
 ```
+
+## 安装（.deb）
+
+```sh
+./packaging/build-deb.sh                            # 产物在 dist/
+sudo apt install ./dist/deepl-quick-translate_*.deb # 用 apt 装可自动拉依赖
+deepl-quick-translate --set-api-key                 # 设置 API Key
+```
+
+安装后应用菜单里会出现「DeepL 快捷翻译」，命令行入口 `deepl-quick-translate` 支持
+`--toggle` / `--background` / `--settings` / `--quit` / `--set-api-key` /
+`--api-key-status` / `--clear-api-key`。
+
+> 这台开发机只有 `dpkg-deb`（没有 `dpkg-buildpackage` / `debhelper`），因此
+> `build-deb.sh` 直接组装目录树再打包，不引入构建期依赖。
 
 ## 技术选型（已确认）
 

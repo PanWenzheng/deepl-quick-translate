@@ -416,7 +416,8 @@ deepl_tool/
 
 ## 10. 打包与安装
 
-**产出**：`.deb`
+**产出**：`.deb`（用 `packaging/build-deb.sh` 构建；本机只有 `dpkg-deb`，
+没有 `dpkg-buildpackage` / `debhelper`，因此直接组装目录树打包，无构建期依赖）
 
 **安装后布局**
 
@@ -427,7 +428,7 @@ deepl_tool/
 /usr/share/doc/…（规格与说明）
 ```
 
-**依赖**：`python3-gi`、`gir1.2-gtk-4.0`、`gir1.2-adw-1`、`python3-httpx`、`python3-secretstorage`
+**依赖**：`python3`、`python3-gi`、`gir1.2-gtk-4.0`、`gir1.2-adw-1`、`python3-httpx`、`gir1.2-secret-1`
 
 **用户流程**：下载 → 安装 → 启动 → 配置 API Key → 使用
 
