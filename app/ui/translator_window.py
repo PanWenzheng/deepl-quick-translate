@@ -19,7 +19,9 @@ from ..deepl.service import MAX_TEXT_BYTES
 
 log = logging.getLogger(__name__)
 
-WINDOW_WIDTH = 640
+WINDOW_WIDTH = 680
+# 窗口本身透明，可见的是一张"卡片"，四周留出投影所需的空间
+SURFACE_MARGIN = 20
 # 热键激活后的"按键守卫"。触发快捷键里的那个键（默认 space）会在窗口拿到焦点后才被
 # 合成器补投递过来；更糟的是实测**松开事件往往根本送不到窗口**，于是 GTK 认为该键
 # 一直被按着，按系统重复率无限重复出空格（实测 3 秒内 80+ 次，间隔约 27ms）。
@@ -30,39 +32,51 @@ TRIGGER_KEY_GUARD_MAX_US = 30_000_000
 # 吞掉的按键超过这个数量就基本可以断定是"按键卡在按下状态"，记一条警告便于排查
 TRIGGER_KEY_SWALLOW_WARN = 500
 
-HINT_TEXT = "Enter 翻译 · Shift+Enter 换行 · Ctrl+C 复制并关闭 · Esc 关闭"
+HINT_SUBMIT = "Enter 翻译"
+HINT_NEWLINE = "Shift+Enter 换行"
+HINT_CLOSE = "Esc 关闭"
+HINT_COPY_CLOSE = "Ctrl+C 复制并关闭"
+HINT_COPY = "Ctrl+C 复制译文"
 # 复制后关闭时，先让"已复制"闪一下再关，否则用户看不到任何反馈
 COPIED_FEEDBACK_MS = 200
 
+# 窗口本体透明：屏幕上只留卡片和它的投影，避免出现一圈与壁纸颜色相近的方框。
+# （CSS 字面量必须是纯 ASCII，注释一律留在 Python 这边）
 CSS = b"""
+window.translator-window {
+    background-color: transparent;
+}
 .translator-surface {
     background-color: @theme_bg_color;
     border-radius: 12px;
-    border: 1px solid alpha(currentColor, 0.12);
+    outline: 1px solid alpha(currentColor, 0.10);
+    outline-offset: -1px;
+    box-shadow: 0 1px 2px alpha(black, 0.28), 0 8px 20px alpha(black, 0.28);
+    padding: 14px 16px;
 }
 .translator-input {
     font-size: 15px;
 }
-.translator-input text {
+/* The TextView paints a @theme_base_color block by default; drop it */
+.translator-input, .translator-input text {
+    background-color: transparent;
+}
+.translator-input-scroller {
     background-color: transparent;
 }
 .translator-placeholder {
     font-size: 15px;
     opacity: 0.45;
 }
-.translator-hint {
-    font-size: 12px;
-    opacity: 0.55;
-}
 .translator-result {
     font-size: 15px;
+    line-height: 145%;
 }
 .translator-detail {
-    font-size: 12px;
-    opacity: 0.7;
+    font-size: 13px;
 }
-.translator-error {
-    color: #c01c28;
+.translator-error-text {
+    color: var(--error-color);
 }
 """
 
@@ -128,6 +142,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self.set_default_size(WINDOW_WIDTH, -1)
         self.set_hide_on_close(True)
         self.set_title(APP_NAME)
+        self.add_css_class("translator-window")
 
         self._input = Gtk.TextView()
         self._input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -139,10 +154,14 @@ class TranslatorWindow(Gtk.ApplicationWindow):
 
         # 输入框随内容增长，超过上限后内部滚动
         self._input_scroller = Gtk.ScrolledWindow()
-        self._input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # 垂直策略用 EXTERNAL 而不是 AUTOMATIC：实测 AUTOMATIC 会让 ScrolledWindow
+        # 无论内容多高都固定多报 36px 的自然高度（一行文字也要 58px），
+        # EXTERNAL 则不占滚动条空间，高度贴合内容，滚轮/键盘滚动照常工作。
+        self._input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
         self._input_scroller.set_propagate_natural_height(True)
         self._input_scroller.set_max_content_height(INPUT_MAX_HEIGHT)
         self._input_scroller.set_child(self._input)
+        self._input_scroller.add_css_class("translator-input-scroller")
         self._input_grows_with_content = True
 
         # TextView 没有占位符，用一个不吃事件的标签叠上去
@@ -167,12 +186,28 @@ class TranslatorWindow(Gtk.ApplicationWindow):
 
         icon = Gtk.Image.new_from_icon_name("system-search-symbolic")
         icon.set_valign(Gtk.Align.START)
-        icon.set_margin_top(4)
+        icon.set_margin_top(5)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         header.append(icon)
         header.append(input_overlay)
         header.append(self._settings_button)
+
+        # 结果区的标题行：左侧是"译文 / 翻译中 / 错误"，加载时右侧跟着转圈。
+        # 标题始终在最左边，因此状态切换时它不会横跳。
+        self._result_heading_label = Gtk.Label(label="")
+        self._result_heading_label.set_xalign(0)
+        self._result_heading_label.add_css_class("caption")
+        self._result_heading_label.add_css_class("dim-label")
+
+        self._result_spinner = Gtk.Spinner()
+        self._result_spinner.set_size_request(16, 16)
+        self._result_spinner.set_valign(Gtk.Align.CENTER)
+        self._result_spinner.set_visible(False)
+
+        self._result_heading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._result_heading.append(self._result_heading_label)
+        self._result_heading.append(self._result_spinner)
 
         self._result_text = Gtk.Label(label="")
         self._result_text.set_xalign(0)
@@ -184,9 +219,11 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._result_detail.set_xalign(0)
         self._result_detail.set_wrap(True)
         self._result_detail.add_css_class("translator-detail")
+        self._result_detail.add_css_class("dim-label")
         self._result_detail.set_visible(False)
 
-        self._result_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._result_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._result_box.append(self._result_heading)
         self._result_box.append(self._result_text)
         self._result_box.append(self._result_detail)
         self._result_box.set_visible(False)
@@ -194,16 +231,17 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._result_separator = Gtk.Separator()
         self._result_separator.set_visible(False)
 
-        self._hint = Gtk.Label(label=HINT_TEXT)
+        self._hint = Gtk.Label(label=self._hint_text())
         self._hint.set_xalign(0)
-        self._hint.add_css_class("translator-hint")
+        self._hint.add_css_class("caption")
+        self._hint.add_css_class("dim-label")
 
-        surface = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        surface = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         surface.add_css_class("translator-surface")
-        surface.set_margin_top(16)
-        surface.set_margin_bottom(12)
-        surface.set_margin_start(16)
-        surface.set_margin_end(16)
+        surface.set_margin_top(SURFACE_MARGIN)
+        surface.set_margin_bottom(SURFACE_MARGIN)
+        surface.set_margin_start(SURFACE_MARGIN)
+        surface.set_margin_end(SURFACE_MARGIN)
         surface.append(header)
         surface.append(self._result_separator)
         surface.append(self._result_box)
@@ -369,7 +407,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         return True
 
     def _dismiss_and_restore(self, serial: int) -> bool:
-        self._hint.set_text(HINT_TEXT)
+        self._refresh_hint()
         if serial != self._present_serial:
             # 这期间窗口被重新唤起过，别把新窗口也关掉
             return GLib.SOURCE_REMOVE
@@ -380,10 +418,21 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._hint.set_text("已复制")
 
         def restore() -> bool:
-            self._hint.set_text(HINT_TEXT)
+            self._refresh_hint()
             return GLib.SOURCE_REMOVE
 
         GLib.timeout_add(1200, restore)
+
+    def _hint_text(self) -> str:
+        """底部提示按当前状态生成：没有结果时不要说"Ctrl+C 复制"。"""
+        parts = [HINT_SUBMIT, HINT_NEWLINE]
+        if self._result_box.get_visible() and self._result_text.get_text():
+            parts.append(HINT_COPY_CLOSE if self._config.close_after_copy else HINT_COPY)
+        parts.append(HINT_CLOSE)
+        return " · ".join(parts)
+
+    def _refresh_hint(self) -> None:
+        self._hint.set_text(self._hint_text())
 
     def _open_settings(self) -> None:
         self._dismiss()
@@ -490,9 +539,11 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._input_grows_with_content = should_grow
         self._input_scroller.set_propagate_natural_height(should_grow)
         if should_grow:
+            self._input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
             self._input_scroller.set_min_content_height(-1)
         else:
-            # 固定高度：只布局可见区域，粘贴大段文本也不会卡
+            # 固定高度：只布局可见区域，粘贴大段文本也不会卡；这时才需要真的滚动条
+            self._input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             self._input_scroller.set_min_content_height(INPUT_MAX_HEIGHT)
         log.debug(
             "window: input sizing mode → %s (%d chars)",
@@ -520,7 +571,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         finally:
             self._trimming_input = False
         self._hint.set_text(f"已达到上限（{kbytes} KiB），多余部分已被截断")
-        GLib.timeout_add(2500, lambda: (self._hint.set_text(HINT_TEXT), False)[-1])
+        GLib.timeout_add(2500, lambda: (self._refresh_hint(), False)[-1])
 
     # ------------------------------------------------------------------ 结果与状态
 
@@ -530,16 +581,20 @@ class TranslatorWindow(Gtk.ApplicationWindow):
 
     def show_loading(self) -> None:
         self._busy = True
-        self._result_text.remove_css_class("translator-error")
-        self._result_text.set_text("翻译中…")
+        self._result_text.remove_css_class("translator-error-text")
+        self._result_text.set_text("")
+        self._result_text.set_visible(False)
         self._result_detail.set_visible(False)
+        self._set_result_heading("翻译中", spinner=True)
         self._show_result_area(True)
 
     def show_result(self, text: str) -> None:
         self._busy = False
-        self._result_text.remove_css_class("translator-error")
+        self._result_text.remove_css_class("translator-error-text")
         self._result_text.set_text(text)
+        self._result_text.set_visible(True)
         self._result_detail.set_visible(False)
+        self._set_result_heading("译文", spinner=False)
         self._show_result_area(True)
 
     def show_error(self, error: TranslationError) -> None:
@@ -548,21 +603,34 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         if not main:
             self.clear_result()
             return
-        self._result_text.add_css_class("translator-error")
+        self._result_text.add_css_class("translator-error-text")
         self._result_text.set_text(main)
+        self._result_text.set_visible(True)
         self._result_detail.set_text(detail)
         self._result_detail.set_visible(bool(detail))
+        self._set_result_heading("错误", spinner=False)
         self._show_result_area(True)
 
     def clear_result(self) -> None:
         self._busy = False
         self._result_text.set_text("")
         self._result_detail.set_text("")
+        self._set_result_heading("", spinner=False)
         self._show_result_area(False)
+
+    def _set_result_heading(self, text: str, *, spinner: bool) -> None:
+        self._result_heading_label.set_text(text)
+        self._result_heading_label.set_visible(bool(text))
+        self._result_spinner.set_visible(spinner)
+        if spinner:
+            self._result_spinner.start()
+        else:
+            self._result_spinner.stop()
 
     def _show_result_area(self, visible: bool) -> None:
         self._result_separator.set_visible(visible)
         self._result_box.set_visible(visible)
+        self._refresh_hint()
 
     # ------------------------------------------------------------------ 剪贴板预填
 

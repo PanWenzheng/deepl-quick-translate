@@ -10,7 +10,7 @@ from __future__ import annotations
 APP_ID = "io.github.panwenzheng.DeepLQuickTranslate"
 APP_NAME = "DeepL 快捷翻译"
 BINARY_NAME = "deepl-quick-translate"
-VERSION = "0.1.0"
+VERSION = "1.0.0"
 
 # 全局快捷键
 DEFAULT_SHORTCUT_ACCEL = "<Control><Alt>space"

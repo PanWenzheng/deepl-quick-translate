@@ -143,7 +143,8 @@ class SettingsWindow(Adw.PreferencesWindow):
         # 输入框刻意留空：里面不放任何 Key 内容，点眼睛也无从泄漏；
         # 掩码单独用一行展示（规格 FR-SET-4）。
         self._key_status_row = Adw.ActionRow(title="已保存的 Key")
-        self._key_status_row.set_sensitive(False)
+        # 只去掉可激活性，不整体置灰：置灰会让掩码本身难读
+        self._key_status_row.set_activatable(False)
         group.add(self._key_status_row)
         self._update_key_status()
 
