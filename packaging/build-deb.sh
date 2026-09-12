@@ -29,6 +29,19 @@ find "$staging/usr/share/deepl-quick-translate" -name '__pycache__' -type d -pru
 cat > "$staging/usr/bin/$pkg_name" <<'LAUNCHER'
 #!/bin/sh
 # DeepL 快捷翻译启动器
+#
+# --toggle（或不带参数）时优先走 D-Bus 快路径：主实例已在运行时，一次调用就能
+# 把窗口唤起来，省掉启动整个 Python 解释器的 ~250ms 开销；主实例没在跑时
+# 调用会失败，自然落到下面的正常启动流程。
+if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = "--toggle" ]; }; then
+    if command -v gdbus >/dev/null 2>&1 && gdbus call --session \
+        --dest io.github.panwenzheng.DeepLQuickTranslate \
+        --object-path /io/github/panwenzheng/DeepLQuickTranslate \
+        --method org.freedesktop.Application.Activate "{}" >/dev/null 2>&1; then
+        exit 0
+    fi
+fi
+
 PYTHONPATH="/usr/share/deepl-quick-translate${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONPATH
 exec python3 -m app "$@"
@@ -54,7 +67,7 @@ Section: utils
 Priority: optional
 Architecture: $arch
 Maintainer: Pan Wenzheng <237622581+PanWenzheng@users.noreply.github.com>
-Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, python3-httpx, gir1.2-secret-1
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, python3-httpx, gir1.2-secret-1, libglib2.0-bin
 Description: 极简的 DeepL 桌面快捷翻译工具
  常驻后台，按 Ctrl+Alt+Space 唤起窗口，自动带入剪贴板内容，
  Enter 翻译、Ctrl+C 复制译文并关闭。

@@ -115,6 +115,7 @@ class TranslatorApplication(Adw.Application):
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         """主实例统一处理参数；第二个实例的参数会由 GApplication 转到这里。"""
+        started_us = GLib.get_monotonic_time()
         args = command_line.get_arguments()[1:]
 
         if any(arg in ("-h", "--help") for arg in args):
@@ -143,6 +144,10 @@ class TranslatorApplication(Adw.Application):
             log.warning("unknown options ignored: %s", " ".join(unknown))
 
         self.show_window()
+        log.info(
+            "toggle handled in %.1f ms (primary side)",
+            (GLib.get_monotonic_time() - started_us) / 1000,
+        )
         return 0
 
     # ------------------------------------------------------------------ 内部
@@ -187,6 +192,11 @@ class TranslatorApplication(Adw.Application):
         self._last_activation_us = now
         log.debug("shortcut activated: %s", shortcut_id)
         self.show_window(arm_key_guard=True, activation_token=activation_token)
+        # 性能指标 PERF-1：快捷键按下到窗口呈现的耗时。
+        # 起点是收到门户/键绑定通知，不含合成器把按键事件送到我们这里的网络/总线延迟，
+        # 因此这是一个偏乐观的下界；但它覆盖了配置读取、剪贴板、窗口呈现等本地开销。
+        elapsed_ms = (GLib.get_monotonic_time() - now) / 1000
+        log.info("window presented %.1f ms after shortcut", elapsed_ms)
 
     def show_window(
         self, *, arm_key_guard: bool = False, activation_token: str | None = None
