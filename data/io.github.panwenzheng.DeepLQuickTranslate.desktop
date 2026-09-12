@@ -12,7 +12,6 @@ Terminal=false
 Categories=Utility;GTK;
 Keywords=translate;translation;deepl;翻译;DeepL;
 StartupNotify=false
-DBusActivatable=true
 Actions=Settings;
 
 [Desktop Action Settings]
