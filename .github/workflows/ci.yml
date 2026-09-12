@@ -11,18 +11,22 @@ permissions:
 jobs:
   # 单元测试跑在 ubuntu-24.04 上：测试只覆盖配置解析、快捷键字符串转换、语言方向
   # 判定与错误体解析，不碰界面，因此 runner 上的 GTK / libadwaita 版本比目标平台
-  # （Ubuntu 26.04 + GNOME 50）旧也没关系——只需要能 import 到类型库。
+  # （Ubuntu 26.04 + GNOME 50）旧也没关系。
+  #
+  # 但 Gtk / Adw 的类型库仍然必须有：app/__init__.py 在包导入时就 require_version
+  # 锁定主版本，而测试要 import app.* 下的模块，所以缺了 gir1.2-adw-1 会直接
+  # ValueError: Namespace Adw not available（第一次跑 CI 就是这么挂的）。
   tests:
     name: 单元测试
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 安装运行依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3-gi gir1.2-gtk-4.0 gir1.2-secret-1 python3-httpx
+            python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-secret-1 python3-httpx
 
       - name: 语法检查
         run: python3 -m compileall -q app tools packaging
@@ -36,13 +40,13 @@ jobs:
     name: 构建 .deb
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 安装构建依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3-gi gir1.2-gdkpixbuf-2.0 librsvg2-common
+            python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gdkpixbuf-2.0 librsvg2-common
 
       - name: 构建
         run: ./packaging/build-deb.sh
