@@ -15,6 +15,7 @@ from ..clipboard.manager import ClipboardManager
 from ..config.manager import Config
 from ..constants import APP_NAME
 from ..deepl.errors import TranslationError
+from ..deepl.service import MAX_TEXT_BYTES
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +68,9 @@ CSS = b"""
 
 # 输入框自动增长的高度上限，超过后输入框内部滚动
 INPUT_MAX_HEIGHT = 220
+# 超过这个字符数就不再"随内容自适应高度"：GTK 为了算自然高度会布局整篇文本，
+# 十几万字符时每次插入都卡一下。改为固定高度 + 内部滚动，只布局可见部分。
+INPUT_AUTO_GROW_MAX_CHARS = 4000
 # 呈现后这段时间内的失焦不算"用户切走"，避免与合成器焦点交接打架
 FOCUS_LOSS_GRACE_US = 250_000
 
@@ -112,6 +116,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._pending_select_all = False
         # 每次呈现递增：让"复制后延迟关窗"的定时器能确认窗口没被重新唤起
         self._present_serial = 0
+        self._trimming_input = False
         # 上一次实际填入输入框的剪贴板内容（None 表示"当时没有文本"）
         self._last_clipboard_text: str | None = None
 
@@ -133,11 +138,12 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._input.set_bottom_margin(0)
 
         # 输入框随内容增长，超过上限后内部滚动
-        input_scroller = Gtk.ScrolledWindow()
-        input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        input_scroller.set_propagate_natural_height(True)
-        input_scroller.set_max_content_height(INPUT_MAX_HEIGHT)
-        input_scroller.set_child(self._input)
+        self._input_scroller = Gtk.ScrolledWindow()
+        self._input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._input_scroller.set_propagate_natural_height(True)
+        self._input_scroller.set_max_content_height(INPUT_MAX_HEIGHT)
+        self._input_scroller.set_child(self._input)
+        self._input_grows_with_content = True
 
         # TextView 没有占位符，用一个不吃事件的标签叠上去
         self._placeholder = Gtk.Label(label="输入要翻译的内容")
@@ -148,7 +154,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
 
         input_overlay = Gtk.Overlay()
         input_overlay.set_hexpand(True)
-        input_overlay.set_child(input_scroller)
+        input_overlay.set_child(self._input_scroller)
         input_overlay.add_overlay(self._placeholder)
 
         self._buffer = self._input.get_buffer()
@@ -470,7 +476,51 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def _on_buffer_changed(self, buffer) -> None:
-        self._placeholder.set_visible(buffer.get_char_count() == 0)
+        count = buffer.get_char_count()
+        self._placeholder.set_visible(count == 0)
+        self._update_input_sizing(count)
+        if not self._trimming_input:
+            self._enforce_length_limit()
+
+    def _update_input_sizing(self, char_count: int) -> None:
+        """大文本时关掉高度自适应，避免整篇布局导致的卡顿。"""
+        should_grow = char_count <= INPUT_AUTO_GROW_MAX_CHARS
+        if should_grow == self._input_grows_with_content:
+            return
+        self._input_grows_with_content = should_grow
+        self._input_scroller.set_propagate_natural_height(should_grow)
+        if should_grow:
+            self._input_scroller.set_min_content_height(-1)
+        else:
+            # 固定高度：只布局可见区域，粘贴大段文本也不会卡
+            self._input_scroller.set_min_content_height(INPUT_MAX_HEIGHT)
+        log.debug(
+            "window: input sizing mode → %s (%d chars)",
+            "auto-grow" if should_grow else "fixed-height",
+            char_count,
+        )
+
+    def _enforce_length_limit(self) -> None:
+        """输入一旦超过 DeepL 单次上限就就地截断：别让用户攒出一份发不出去的文本。
+
+        按 UTF-8 字节精确裁剪，并用 errors="ignore" 解码，避免把多字节字符截成半个。
+        """
+        text = self.text
+        if len(text.encode("utf-8")) <= MAX_TEXT_BYTES:
+            return
+        trimmed = text.encode("utf-8")[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+        kbytes = MAX_TEXT_BYTES // 1024
+        log.info(
+            "window: input exceeded %d KiB, truncated to %d chars", kbytes, len(trimmed)
+        )
+        self._trimming_input = True
+        try:
+            self._buffer.set_text(trimmed)
+            self._buffer.place_cursor(self._buffer.get_end_iter())
+        finally:
+            self._trimming_input = False
+        self._hint.set_text(f"已达到上限（{kbytes} KiB），多余部分已被截断")
+        GLib.timeout_add(2500, lambda: (self._hint.set_text(HINT_TEXT), False)[-1])
 
     # ------------------------------------------------------------------ 结果与状态
 
