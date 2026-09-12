@@ -191,6 +191,11 @@ class TranslatorApplication(Adw.Application):
     def show_window(
         self, *, arm_key_guard: bool = False, activation_token: str | None = None
     ) -> None:
+        # 翻译窗口是"临时覆盖层"：把它唤起来时先收起设置窗口，免得两层叠在一起
+        # 让人分不清 Esc 会关掉谁
+        if self._settings_window is not None and self._settings_window.get_visible():
+            log.debug("settings: hiding because the translator window was summoned")
+            self._settings_window.set_visible(False)
         if self._window is None:
             self._window = TranslatorWindow(
                 self,

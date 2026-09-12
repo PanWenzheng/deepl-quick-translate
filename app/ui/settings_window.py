@@ -18,6 +18,15 @@ log = logging.getLogger(__name__)
 
 ENDPOINT_CUSTOM = "custom"
 
+# 这些键名本身就是修饰键，不能当作"按键本体"
+MODIFIER_KEY_NAMES = frozenset(
+    {
+        "Control_L", "Control_R", "Alt_L", "Alt_R", "Super_L", "Super_R",
+        "Shift_L", "Shift_R", "Meta_L", "Meta_R", "Hyper_L", "Hyper_R",
+        "Caps_Lock", "Num_Lock", "ISO_Level3_Shift",
+    }
+)
+
 
 class SettingsWindow(Adw.PreferencesWindow):
     """General + DeepL 两页，V1 不再加别的配置。"""
@@ -229,29 +238,65 @@ class _ShortcutCaptureDialog(Gtk.Window):
         box.set_margin_bottom(18)
         box.set_margin_start(18)
         box.set_margin_end(18)
+        # GTK4 的按键事件按"焦点控件"投递：窗口里只有标签时焦点控件为 None，
+        # 控制器永远收不到按键。所以必须自己造一个可聚焦的接收者。
+        box.set_focusable(True)
 
         title = Gtk.Label(label="请按下新的组合键")
         title.add_css_class("title-4")
-        hint = Gtk.Label(label=f"当前：{current}　（Esc 取消，需含 Ctrl / Alt / Super）")
-        hint.add_css_class("dim-label")
-        hint.set_wrap(True)
+        self._hint = Gtk.Label(
+            label=(
+                f"当前：{current}　（Esc 取消）\n"
+                "按住 Ctrl / Alt / Super 中的至少一个，再按一个普通键。\n"
+                "注意：含 Super 的组合常被系统占用（如 Super+Space 切换输入法），"
+                "那种情况不会传到本窗口，建议优先用 Ctrl+Alt+…"
+            )
+        )
+        self._hint.add_css_class("dim-label")
+        self._hint.set_wrap(True)
         box.append(title)
-        box.append(hint)
+        box.append(self._hint)
         self.set_child(box)
+        self._box = box
 
         controller = Gtk.EventControllerKey()
         controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         controller.connect("key-pressed", self._on_key_pressed)
         self.add_controller(controller)
+        self.connect("map", lambda *_: box.grab_focus())
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
+        try:
+            return self._capture_key(keyval, state)
+        except Exception:  # noqa: BLE001 - 捕获失败时吞掉按键，避免漏到别处
+            log.exception("settings: shortcut capture failed")
+            return True
+
+    def _capture_key(self, keyval: int, state: Gdk.ModifierType) -> bool:
         if keyval == Gdk.KEY_Escape:
             self.close()
             return True
-        accel = Gtk.accelerator_name(keyval, state & Gtk.accelerator_get_default_mod_mask())
-        # 只接受"修饰键 + 普通键"的组合
-        if not accel or "+" not in accel:
+        mods = state & Gtk.accelerator_get_default_mod_mask()
+        accel = Gtk.accelerator_name(keyval, mods)
+        # GTK 加速键语法形如 <Control><Alt>t：修饰键在尖括号内，后面才是按键本体。
+        # 只按修饰键时 accel 以 ">" 结尾（例如 "<Control>"），此时不构成有效组合。
+        last_gt = accel.rfind(">") if accel else -1
+        key_part = accel[last_gt + 1 :] if last_gt != -1 else ""
+        if not accel or last_gt == -1 or not key_part or key_part in MODIFIER_KEY_NAMES:
+            held = " + ".join(
+                name
+                for mask, name in (
+                    (Gdk.ModifierType.CONTROL_MASK, "Ctrl"),
+                    (Gdk.ModifierType.ALT_MASK, "Alt"),
+                    (Gdk.ModifierType.SUPER_MASK, "Super"),
+                    (Gdk.ModifierType.SHIFT_MASK, "Shift"),
+                )
+                if mods & mask
+            ) or "未按住修饰键"
+            log.debug("settings: modifier-only press (%s), waiting for a normal key", held)
+            self._hint.set_text(f"已按住：{held}　再按一个普通键（Esc 取消）")
             return True
+        log.info("settings: new shortcut captured (%s)", accel)
         self.emit("captured", accel)
         self.close()
         return True
