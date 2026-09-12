@@ -138,13 +138,17 @@ class SettingsWindow(Adw.PreferencesWindow):
             model=Gtk.StringList.new(["DeepL API Free", "DeepL API Pro", "自定义"]),
         )
         self._endpoint_row.set_selected(self._endpoint_index())
+        self._endpoint_row.set_subtitle(self._config.endpoint)
         self._endpoint_row.connect("notify::selected", self._on_endpoint_changed)
         group.add(self._endpoint_row)
 
         self._custom_endpoint_row = Adw.EntryRow(title="自定义 Endpoint")
         self._custom_endpoint_row.set_text(self._config.endpoint)
+        self._custom_endpoint_row.set_show_apply_button(True)
         self._custom_endpoint_row.set_visible(self._endpoint_row.get_selected() == 2)
         self._custom_endpoint_row.connect("apply", self._on_custom_endpoint_applied)
+        # 光靠"应用"按钮/回车容易漏：输入过程中直接生效，但只在自定义模式下
+        self._custom_endpoint_row.connect("changed", self._on_custom_endpoint_changed)
         group.add(self._custom_endpoint_row)
         page.add(group)
 
@@ -193,7 +197,11 @@ class SettingsWindow(Adw.PreferencesWindow):
         elif selected == 1:
             self._config.endpoint = ENDPOINT_PRO
         else:
+            # 切到"自定义"时立刻按输入框里的当前文本生效：否则文本框内容没变就
+            # 不会触发 changed，界面显示自定义 URL 而实际仍在用 Free/Pro 端点
+            self._on_custom_endpoint_changed(self._custom_endpoint_row)
             return
+        self._endpoint_row.set_subtitle(self._config.endpoint)
         self._on_config_changed()
 
     def _on_custom_endpoint_applied(self, row: Adw.EntryRow) -> None:
@@ -201,6 +209,20 @@ class SettingsWindow(Adw.PreferencesWindow):
         if not value:
             return
         self._config.endpoint = value
+        self._endpoint_row.set_subtitle(value)
+        self._on_config_changed()
+
+    def _on_custom_endpoint_changed(self, row: Adw.EntryRow) -> None:
+        """只在用户确实选了"自定义"时才写入，避免覆盖 Free/Pro 预设。"""
+        if self._endpoint_row.get_selected() != 2:
+            return
+        value = row.get_text().strip().rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            return
+        if value == self._config.endpoint:
+            return
+        self._config.endpoint = value
+        self._endpoint_row.set_subtitle(value)
         self._on_config_changed()
 
     def _on_test_connection(self, _button: Gtk.Button) -> None:

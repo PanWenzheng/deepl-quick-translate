@@ -64,11 +64,18 @@ class TranslationService:
         self._config = config
         self._secrets = secrets
         self._client: DeepLClient | None = None
+        # 记住当前客户端对应的 (Key, Endpoint)：任一变化都要重建，
+        # 否则设置页改了 Key/Endpoint 之后仍会拿旧连接去发请求
+        self._client_signature: tuple[str, str] | None = None
 
-    def _get_client(self, api_key: str) -> DeepLClient:
-        # 复用同一个客户端以保持连接；endpoint 或 key 变化时重建
-        if self._client is None:
-            self._client = DeepLClient(api_key=api_key, endpoint=self._config.endpoint)
+    async def _get_client(self, api_key: str) -> DeepLClient:
+        signature = (api_key, self._config.endpoint)
+        if self._client is not None and self._client_signature == signature:
+            return self._client
+        if self._client is not None:
+            await self._client.aclose()
+        self._client = DeepLClient(api_key=api_key, endpoint=self._config.endpoint)
+        self._client_signature = signature
         return self._client
 
     async def translate(self, text: str) -> TranslationResult:
@@ -89,7 +96,8 @@ class TranslationService:
             "deepl: translating %d chars (source=%s, target=%s)",
             len(text), source_lang or "auto", target_lang,
         )
-        return await self._get_client(api_key).translate(
+        client = await self._get_client(api_key)
+        return await client.translate(
             text, source_lang=source_lang, target_lang=target_lang
         )
 
@@ -98,7 +106,8 @@ class TranslationService:
         api_key = self._secrets.lookup()
         if not api_key:
             raise TranslationError("no_api_key")
-        return await self._get_client(api_key).check_usage()
+        client = await self._get_client(api_key)
+        return await client.check_usage()
 
     async def aclose(self) -> None:
         if self._client is not None:
