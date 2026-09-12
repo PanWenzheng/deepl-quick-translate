@@ -16,11 +16,15 @@ from ..constants import APP_NAME
 log = logging.getLogger(__name__)
 
 WINDOW_WIDTH = 640
-# 热键激活后的"按键守卫"上限。触发快捷键里的那个键（默认 space）会在窗口拿到焦点
-# 后才被合成器补投递过来——实测比 present() 晚约 570ms，并且用户按住不放时还会被
-# 系统自动重复一连串。守卫期间吞掉该键的按下事件，直到用户按了别的键或超时为止。
-# 代价：窗口刚出现的极短时间内，无法把这个触发键本身当作第一个字符输入。
-TRIGGER_KEY_GUARD_US = 1_500_000
+# 热键激活后的"按键守卫"。触发快捷键里的那个键（默认 space）会在窗口拿到焦点后才被
+# 合成器补投递过来；更糟的是实测**松开事件往往根本送不到窗口**，于是 GTK 认为该键
+# 一直被按着，按系统重复率无限重复出空格（实测 3 秒内 80+ 次，间隔约 27ms）。
+# 因此守卫不能"按时间到期"，只能等该键松开、用户按了别的键、或到达兜底上限。
+# 代价：窗口刚出现时，若这个触发键恰好是用户想输入的第一个字符，会被吞掉一次
+# （其松开事件会随即解除守卫，之后即可正常输入）。
+TRIGGER_KEY_GUARD_MAX_US = 30_000_000
+# 吞掉的按键超过这个数量就基本可以断定是"按键卡在按下状态"，记一条警告便于排查
+TRIGGER_KEY_SWALLOW_WARN = 500
 
 CSS = b"""
 .translator-surface {
@@ -129,6 +133,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         guard = Gtk.EventControllerKey()
         guard.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         guard.connect("key-pressed", self._on_key_pressed_capture)
+        guard.connect("key-released", self._on_key_released_capture)
         self.add_controller(guard)
 
         # 冒泡阶段：只处理 Esc。放在冒泡阶段是有意的——输入法组合中按 Esc
@@ -141,21 +146,29 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         now = GLib.get_monotonic_time()
         if self._guard_active:
             if now >= self._guard_deadline_us:
-                self._end_key_guard()
+                self._end_key_guard("timeout")
             elif keyval == self._trigger_keyval:
                 # 按住热键时会被系统自动重复成一长串，这里只计数，结束时汇总一条日志
                 self._swallowed_keys += 1
                 return True
             else:
                 # 用户已经开始正常输入，守卫解除
-                self._end_key_guard()
+                self._end_key_guard("user-typing")
         return False
 
-    def _end_key_guard(self) -> None:
+    def _on_key_released_capture(self, _controller, keyval, _keycode, _state) -> bool:
+        # 触发键松开后系统不再重复，泄漏也就结束了
+        if self._guard_active and keyval == self._trigger_keyval:
+            self._end_key_guard("trigger-released")
+        return False
+
+    def _end_key_guard(self, reason: str) -> None:
         if self._guard_active and self._swallowed_keys:
-            log.debug(
-                "window: swallowed %d leaked trigger key event(s)", self._swallowed_keys
-            )
+            message = "window: swallowed %d leaked trigger key event(s) (%s)"
+            if self._swallowed_keys >= TRIGGER_KEY_SWALLOW_WARN:
+                log.warning(message, self._swallowed_keys, reason)
+            else:
+                log.debug(message, self._swallowed_keys, reason)
         self._guard_active = False
         self._swallowed_keys = 0
 
@@ -170,15 +183,39 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         """Enter 提交（由输入法确认提交后的再次回车触发）。翻译逻辑在 M3 接入。"""
         log.debug("window: submit requested (translation lands in M3)")
 
-    def present_with_focus(self, *, arm_key_guard: bool = False) -> None:
+    def present_with_focus(
+        self, *, arm_key_guard: bool = False, activation_token: str | None = None
+    ) -> None:
         """唤起窗口并确保输入框拿到焦点（后续步骤才能读剪贴板）。"""
         self._last_present_us = GLib.get_monotonic_time()
         if arm_key_guard:
             self._guard_active = True
             self._swallowed_keys = 0
-            self._guard_deadline_us = self._last_present_us + TRIGGER_KEY_GUARD_US
+            self._guard_deadline_us = self._last_present_us + TRIGGER_KEY_GUARD_MAX_US
+        self._apply_activation_token(activation_token)
         self.present()
         self._entry.grab_focus()
         # 选中已有内容：用户直接键入即可整体替换（M2 会用剪贴板内容整体覆盖）
         self._entry.select_region(0, -1)
         log.debug("window: presented")
+
+    def _apply_activation_token(self, activation_token: str | None) -> None:
+        """把门户给的 activation token 交给合成器。
+
+        这样合成器知道这次激活源自全局快捷键，才能正确处理焦点与触发按键
+        （否则按键松开事件可能永远送不到窗口，GTK 会一直重复那个键）。
+        """
+        if not activation_token:
+            return
+        try:
+            if not self.get_realized():
+                self.realize()
+            surface = self.get_surface()
+            setter = getattr(surface, "set_startup_id", None)
+            if setter is None:
+                log.debug("window: surface does not support activation tokens")
+                return
+            setter(activation_token)
+            log.debug("window: activation token applied")
+        except Exception as exc:  # noqa: BLE001 - 失败不影响窗口呈现
+            log.debug("window: cannot apply activation token (%s)", exc)

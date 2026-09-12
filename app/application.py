@@ -51,6 +51,7 @@ class TranslatorApplication(Adw.Application):
         self._window: TranslatorWindow | None = None
         self._shortcuts: ShortcutManager | None = None
         self._last_activation_us = 0
+        self._debounced_activations = 0
         self.shortcut_ok: bool = False
         self.shortcut_error: str | None = None
 
@@ -141,19 +142,29 @@ class TranslatorApplication(Adw.Application):
         else:
             log.error("global shortcut is unavailable: %s", error)
 
-    def _on_shortcut_activated(self, shortcut_id: str, _timestamp: int) -> None:
+    def _on_shortcut_activated(
+        self, shortcut_id: str, _timestamp: int, activation_token: str | None = None
+    ) -> None:
         now = GLib.get_monotonic_time()
         if now - self._last_activation_us < ACTIVATION_DEBOUNCE_US:
-            log.debug("shortcut activation ignored (debounce)")
+            # 按住热键会连续触发，这里只计数，恢复正常后再汇总一条
+            self._debounced_activations += 1
             return
+        if self._debounced_activations:
+            log.debug("ignored %d repeated shortcut activation(s)", self._debounced_activations)
+            self._debounced_activations = 0
         self._last_activation_us = now
         log.debug("shortcut activated: %s", shortcut_id)
-        self.show_window(arm_key_guard=True)
+        self.show_window(arm_key_guard=True, activation_token=activation_token)
 
-    def show_window(self, *, arm_key_guard: bool = False) -> None:
+    def show_window(
+        self, *, arm_key_guard: bool = False, activation_token: str | None = None
+    ) -> None:
         if self._window is None:
             self._window = TranslatorWindow(self, self._config)
-        self._window.present_with_focus(arm_key_guard=arm_key_guard)
+        self._window.present_with_focus(
+            arm_key_guard=arm_key_guard, activation_token=activation_token
+        )
 
     def _on_signal(self) -> bool:
         log.info("signal received; quitting")

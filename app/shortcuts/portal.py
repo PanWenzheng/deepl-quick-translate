@@ -52,7 +52,7 @@ class PortalGlobalShortcuts:
         self._pending: dict[str, tuple[int, Callable[[int, dict], None]]] = {}
         self._session_handle: str | None = None
         self._activated_sub: int | None = None
-        self._on_activated: Callable[[str, int], None] | None = None
+        self._on_activated: Callable[[str, int, str | None], None] | None = None
 
         # 注册请求参数，异步链路中反复用到
         self._shortcut_id = ""
@@ -68,7 +68,7 @@ class PortalGlobalShortcuts:
         shortcut_id: str,
         description: str,
         preferred_trigger: str,
-        on_activated: Callable[[str, int], None],
+        on_activated: Callable[[str, int, str | None], None],
         on_result: Callable[[Exception | None], None],
     ) -> None:
         """异步注册快捷键；``on_result(error)`` 在成功或失败时回调一次。"""
@@ -297,7 +297,7 @@ class PortalGlobalShortcuts:
         *_user_data,
     ) -> None:
         try:
-            session, shortcut_id, timestamp, _options = parameters.unpack()
+            session, shortcut_id, timestamp, options = parameters.unpack()
         except (ValueError, TypeError) as exc:
             log.warning("portal: unexpected Activated payload (%s)", exc)
             return
@@ -305,5 +305,11 @@ class PortalGlobalShortcuts:
         if self._session_handle is not None and str(session) != self._session_handle:
             log.debug("portal: ignoring Activated for foreign session %s", session)
             return
+        # activation_token 交给窗口，走合成器认可的正规激活路径
+        activation_token = None
+        if isinstance(options, dict):
+            token = options.get("activation_token")
+            if token:
+                activation_token = str(token)
         if self._on_activated is not None:
-            self._on_activated(shortcut_id, timestamp)
+            self._on_activated(shortcut_id, timestamp, activation_token)

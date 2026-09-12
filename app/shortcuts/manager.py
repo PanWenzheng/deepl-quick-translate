@@ -55,7 +55,7 @@ class ShortcutManager:
         self,
         app_id: str,
         config: Config,
-        on_activated: Callable[[str, int], None],
+        on_activated: Callable[[str, int, str | None], None],
         *,
         on_config_changed: Callable[[Config], None] | None = None,
     ) -> None:
