@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from app.config.manager import Config, ConfigManager, config_dir
+from app.clipboard.manager import looks_like_file_paths
 from app.constants import DEFAULT_ENDPOINT, DEFAULT_SHORTCUT_ACCEL
 from app.shortcuts.accels import (
     gtk_accel_to_display,
@@ -104,6 +105,19 @@ class AccelConversionTest(unittest.TestCase):
         self.assertTrue(is_valid_gtk_accel("<Control><Alt>space"))
         self.assertFalse(is_valid_gtk_accel("<Control><Alt>"))
         self.assertFalse(is_valid_gtk_accel(""))
+
+
+class ClipboardHeuristicsTest(unittest.TestCase):
+    def test_file_paths_detected(self) -> None:
+        self.assertTrue(looks_like_file_paths("/home/user/a.png"))
+        self.assertTrue(looks_like_file_paths("/home/user/a.png\n/home/user/b.png"))
+        self.assertTrue(looks_like_file_paths("file:///home/user/a.png"))
+
+    def test_normal_text_not_detected(self) -> None:
+        self.assertFalse(looks_like_file_paths("How are you today?"))
+        self.assertFalse(looks_like_file_paths("请把 /etc 下的配置发我"))
+        self.assertFalse(looks_like_file_paths(""))
+        self.assertFalse(looks_like_file_paths("https://example.com/a.png"))
 
 
 if __name__ == "__main__":

@@ -23,6 +23,25 @@ log = logging.getLogger(__name__)
 TEXT_MIME = "text/plain"
 TEXT_MIME_UTF8 = "text/plain;charset=utf-8"
 
+# 文件管理器复制文件时，剪贴板会带上这些 MIME 标记，同时**也会**提供一份
+# text/plain（内容是文件的路径或 URI）。只判断 text/plain 会把路径当成待翻译文本，
+# 因此要结合这些标记识别"这是文件而不是文本"。
+FILE_LIST_MIME_TYPES = (
+    "x-special/gnome-copied-files",
+    "x-special/nautilus-clipboard",
+    "text/uri-list",
+)
+
+
+def looks_like_file_paths(text: str) -> bool:
+    """判断一段文本是否只是文件路径列表（每行都是绝对路径或 ``file://`` URI）。"""
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if not lines:
+        return False
+    return all(
+        line.startswith("/") or line.startswith("file://") for line in lines
+    )
+
 
 class ClipboardManager:
     """只读 ``text/plain`` 的剪贴板封装。"""
@@ -51,13 +70,28 @@ class ClipboardManager:
         if clipboard is None:
             callback(None)
             return
-        clipboard.read_text_async(None, self._on_read_text, callback)
+        clipboard.read_text_async(
+            None, self._on_read_text, (callback, self._looks_like_file_clipboard(clipboard))
+        )
 
-    def _on_read_text(self, clipboard, result, callback: Callable[[str | None], None]) -> None:
+    def _looks_like_file_clipboard(self, clipboard: Gdk.Clipboard) -> bool:
+        try:
+            mime_types = set(clipboard.get_formats().get_mime_types() or [])
+        except Exception as exc:  # noqa: BLE001 - 拿不到格式就按普通文本处理
+            log.debug("clipboard: cannot inspect formats (%s)", exc)
+            return False
+        return any(mime in mime_types for mime in FILE_LIST_MIME_TYPES)
+
+    def _on_read_text(self, clipboard, result, user_data) -> None:
+        callback, file_clipboard = user_data
         try:
             text = clipboard.read_text_finish(result)
         except GLib.Error as exc:
             log.debug("clipboard: read failed (%s)", exc.message)
+            text = None
+        # 文件复制：text/plain 里是路径，按规格当作"没有文本"
+        if text and file_clipboard and looks_like_file_paths(text):
+            log.debug("clipboard: file clipboard (path only), ignoring")
             text = None
         # 空白内容一律按"没有文本"处理，避免把一串空白填进输入框
         if not text or not text.strip():
