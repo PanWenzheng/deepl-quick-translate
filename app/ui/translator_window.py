@@ -1,15 +1,17 @@
-"""翻译窗口（M1 骨架）。
+"""翻译窗口。
 
-本阶段只负责"能被唤起、能拿到焦点、能关闭"，剪贴板预填（M2）、输入法守卫（M2）
-与翻译请求（M3）随后接入。
+M2 范围：剪贴板预填、多行输入、输入法友好的 Enter/Shift+Enter、失焦自动隐藏。
+翻译请求与结果展示在 M3 接入。
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from gi.repository import Gdk, GLib, Gtk
 
+from ..clipboard.manager import ClipboardManager
 from ..config.manager import Config
 from ..constants import APP_NAME
 
@@ -35,6 +37,13 @@ CSS = b"""
 .translator-input {
     font-size: 15px;
 }
+.translator-input text {
+    background-color: transparent;
+}
+.translator-placeholder {
+    font-size: 15px;
+    opacity: 0.45;
+}
 .translator-hint {
     font-size: 12px;
     opacity: 0.55;
@@ -43,6 +52,11 @@ CSS = b"""
     font-size: 15px;
 }
 """
+
+# 输入框自动增长的高度上限，超过后输入框内部滚动
+INPUT_MAX_HEIGHT = 220
+# 呈现后这段时间内的失焦不算"用户切走"，避免与合成器焦点交接打架
+FOCUS_LOSS_GRACE_US = 250_000
 
 
 def _install_css() -> None:
@@ -59,14 +73,24 @@ def _install_css() -> None:
 class TranslatorWindow(Gtk.ApplicationWindow):
     """Spotlight 风格的单窗口。窗口只隐藏、不销毁，进程继续常驻。"""
 
-    def __init__(self, application: Gtk.Application, config: Config) -> None:
+    def __init__(
+        self,
+        application: Gtk.Application,
+        config: Config,
+        on_submit: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__(application=application, title=APP_NAME)
         self._config = config
+        self._on_submit = on_submit
+        self._clipboard = ClipboardManager()
         self._last_present_us = 0
         self._guard_active = False
         self._guard_deadline_us = 0
         self._swallowed_keys = 0
         self._trigger_keyval = self._parse_trigger_keyval()
+        # 剪贴板预填的会话序号：异步结果回来时用它判断是否已经过期
+        self._prefill_serial = 0
+        self._user_edited = False
 
         _install_css()
 
@@ -77,22 +101,47 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self.set_hide_on_close(True)
         self.set_title(APP_NAME)
 
-        self._entry = Gtk.Entry()
-        self._entry.set_hexpand(True)
-        self._entry.set_placeholder_text("输入要翻译的内容")
-        self._entry.add_css_class("translator-input")
-        # 提交走 Entry 的 activate 信号：输入法组合（preedit）期间 GTK 的 IM context
-        # 会先消费 Enter 用于"上屏"当前候选/原始字母，activate 不会被触发，
-        # 因此不会出现"输入法还没确认就提交翻译"的误判。
-        self._entry.connect("activate", self._on_entry_activate)
+        self._input = Gtk.TextView()
+        self._input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self._input.set_accepts_tab(False)
+        self._input.set_hexpand(True)
+        self._input.add_css_class("translator-input")
+        self._input.set_top_margin(0)
+        self._input.set_bottom_margin(0)
+
+        # 输入框随内容增长，超过上限后内部滚动
+        input_scroller = Gtk.ScrolledWindow()
+        input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        input_scroller.set_propagate_natural_height(True)
+        input_scroller.set_max_content_height(INPUT_MAX_HEIGHT)
+        input_scroller.set_child(self._input)
+
+        # TextView 没有占位符，用一个不吃事件的标签叠上去
+        self._placeholder = Gtk.Label(label="输入要翻译的内容")
+        self._placeholder.set_xalign(0)
+        self._placeholder.set_yalign(0)
+        self._placeholder.set_can_target(False)
+        self._placeholder.add_css_class("translator-placeholder")
+
+        input_overlay = Gtk.Overlay()
+        input_overlay.set_hexpand(True)
+        input_overlay.set_child(input_scroller)
+        input_overlay.add_overlay(self._placeholder)
+
+        self._buffer = self._input.get_buffer()
+        self._buffer.connect("changed", self._on_buffer_changed)
 
         self._settings_button = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
         self._settings_button.set_has_frame(False)
         self._settings_button.set_tooltip_text("设置")
 
+        icon = Gtk.Image.new_from_icon_name("system-search-symbolic")
+        icon.set_valign(Gtk.Align.START)
+        icon.set_margin_top(4)
+
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        header.append(Gtk.Image.new_from_icon_name("system-search-symbolic"))
-        header.append(self._entry)
+        header.append(icon)
+        header.append(input_overlay)
         header.append(self._settings_button)
 
         self._result = Gtk.Label(label="")
@@ -118,6 +167,8 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self.set_child(surface)
 
         self._install_key_controllers()
+        self.connect("notify::is-active", self._on_active_changed)
+        self._on_buffer_changed(self._buffer)
 
     # ------------------------------------------------------------------ 行为
 
@@ -154,6 +205,17 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             else:
                 # 用户已经开始正常输入，守卫解除
                 self._end_key_guard("user-typing")
+
+        # 走到这里说明是用户的真实按键，后续到达的剪贴板预填不应再覆盖输入
+        self._user_edited = True
+
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if _state & Gdk.ModifierType.SHIFT_MASK:
+                return False  # Shift+Enter 交给输入框插入换行
+            if self._im_wants_key(_controller):
+                return True  # 输入法正在组合，这一下回车用于上屏/确认候选
+            self._submit()
+            return True
         return False
 
     def _on_key_released_capture(self, _controller, keyval, _keycode, _state) -> bool:
@@ -179,9 +241,82 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             return True
         return False
 
-    def _on_entry_activate(self, _entry) -> None:
-        """Enter 提交（由输入法确认提交后的再次回车触发）。翻译逻辑在 M3 接入。"""
-        log.debug("window: submit requested (translation lands in M3)")
+    def _im_wants_key(self, controller) -> bool:
+        """询问输入法要不要这个按键（组合中会返回 True）。
+
+        GTK 4.22 起 ``Gtk.TextView`` 不再暴露 IM context，但保留了
+        ``im_context_filter_keypress``——它是唯一能区分"输入法正在组合"与
+        "用户真的要提交"的公开途径。
+        """
+        event = controller.get_current_event() if hasattr(controller, "get_current_event") else None
+        if event is None:
+            return False
+        try:
+            return bool(self._input.im_context_filter_keypress(event))
+        except (AttributeError, TypeError) as exc:
+            log.debug("window: cannot query input method (%s)", exc)
+            return False
+
+    def _submit(self) -> None:
+        text = self.text
+        if not text.strip():
+            log.debug("window: submit ignored (empty input)")
+            return
+        if self._on_submit is not None:
+            self._on_submit(text)
+        else:
+            log.debug("window: submit requested (translation lands in M3)")
+
+    # ------------------------------------------------------------------ 内容
+
+    @property
+    def text(self) -> str:
+        return self._buffer.get_text(
+            self._buffer.get_start_iter(), self._buffer.get_end_iter(), False
+        )
+
+    def set_text(self, text: str, *, select_all: bool = True) -> None:
+        self._buffer.set_text(text)
+        if select_all and text:
+            self._buffer.select_range(
+                self._buffer.get_start_iter(), self._buffer.get_end_iter()
+            )
+            self._input.scroll_to_iter(self._buffer.get_start_iter(), 0.0, False, 0.0, 0.0)
+
+    def _on_buffer_changed(self, buffer) -> None:
+        self._placeholder.set_visible(buffer.get_char_count() == 0)
+
+    # ------------------------------------------------------------------ 剪贴板预填
+
+    def _start_clipboard_prefill(self) -> None:
+        """唤起后读一次剪贴板。必须在窗口拿到焦点之后调用。"""
+        self._prefill_serial += 1
+        serial = self._prefill_serial
+        self._user_edited = False
+        self._clipboard.read_text(lambda text: self._apply_prefill(serial, text))
+
+    def _apply_prefill(self, serial: int, text: str | None) -> None:
+        if serial != self._prefill_serial:
+            log.debug("clipboard: prefill dropped (window re-activated)")
+            return
+        if self._user_edited:
+            log.debug("clipboard: prefill dropped (user already typed)")
+            return
+        # 没有文本 → 清空输入框（规格 §8）
+        self.set_text(text or "")
+        log.debug("clipboard: prefill applied (has_text=%s)", bool(text))
+
+    # ------------------------------------------------------------------ 失焦
+
+    def _on_active_changed(self, *_args) -> None:
+        if self.is_active() or not self._config.hide_on_focus_loss:
+            return
+        if not self.get_visible():
+            return
+        if GLib.get_monotonic_time() - self._last_present_us < FOCUS_LOSS_GRACE_US:
+            return
+        log.debug("window: focus lost, hiding")
+        self.hide()
 
     def present_with_focus(
         self, *, arm_key_guard: bool = False, activation_token: str | None = None
@@ -194,9 +329,10 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             self._guard_deadline_us = self._last_present_us + TRIGGER_KEY_GUARD_MAX_US
         self._apply_activation_token(activation_token)
         self.present()
-        self._entry.grab_focus()
-        # 选中已有内容：用户直接键入即可整体替换（M2 会用剪贴板内容整体覆盖）
-        self._entry.select_region(0, -1)
+        self._input.grab_focus()
+        # 先选中已有内容，等剪贴板结果回来后会整体覆盖
+        self.set_text(self.text)
+        self._start_clipboard_prefill()
         log.debug("window: presented")
 
     def _apply_activation_token(self, activation_token: str | None) -> None:

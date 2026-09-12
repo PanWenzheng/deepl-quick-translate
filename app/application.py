@@ -161,10 +161,15 @@ class TranslatorApplication(Adw.Application):
         self, *, arm_key_guard: bool = False, activation_token: str | None = None
     ) -> None:
         if self._window is None:
-            self._window = TranslatorWindow(self, self._config)
+            self._window = TranslatorWindow(self, self._config, on_submit=self._on_submit)
         self._window.present_with_focus(
             arm_key_guard=arm_key_guard, activation_token=activation_token
         )
+
+    def _on_submit(self, text: str) -> None:
+        """提交入口。真正的 DeepL 请求在 M3 接入；这里只记录长度，不记录内容。"""
+        # 隐私约束：日志中绝不出现用户文本
+        log.debug("translation requested (%d chars); DeepL call lands in M3", len(text))
 
     def _on_signal(self) -> bool:
         log.info("signal received; quitting")
