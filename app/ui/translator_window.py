@@ -30,6 +30,8 @@ TRIGGER_KEY_GUARD_MAX_US = 30_000_000
 TRIGGER_KEY_SWALLOW_WARN = 500
 
 HINT_TEXT = "Enter 翻译 · Shift+Enter 换行 · Ctrl+C 复制并关闭 · Esc 关闭"
+# 复制后关闭时，先让"已复制"闪一下再关，否则用户看不到任何反馈
+COPIED_FEEDBACK_MS = 200
 
 CSS = b"""
 .translator-surface {
@@ -106,6 +108,10 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         # 剪贴板预填的会话序号：异步结果回来时用它判断是否已经过期
         self._prefill_serial = 0
         self._user_edited = False
+        # 呈现后的一小段时间内允许"补全选"：焦点落定会清掉选择，需要重新选上
+        self._pending_select_all = False
+        # 每次呈现递增：让"复制后延迟关窗"的定时器能确认窗口没被重新唤起
+        self._present_serial = 0
         # 上一次实际填入输入框的剪贴板内容（None 表示"当时没有文本"）
         self._last_clipboard_text: str | None = None
 
@@ -255,6 +261,16 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         if keyval == self._trigger_keyval and not self._guard_active:
             self._diagnose_trigger_press(_controller, _state)
 
+        # Ctrl+C：必须放在捕获阶段——输入框（GtkTextView）会自己消费 Ctrl+C 做复制，
+        # 冒泡阶段根本看不到。仅当焦点在输入框、且它没有选中文字时才解释为"复制译文"。
+        if (
+            keyval in (Gdk.KEY_c, Gdk.KEY_C)
+            and _state & Gdk.ModifierType.CONTROL_MASK
+            and not _state & Gdk.ModifierType.SHIFT_MASK
+            and self._input.has_focus()
+        ):
+            return self._copy_result_if_appropriate()
+
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             if _state & Gdk.ModifierType.SHIFT_MASK:
                 return False  # Shift+Enter 交给输入框插入换行
@@ -327,13 +343,6 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             log.debug("window: Esc pressed, hiding")
             self._dismiss()
             return True
-        # Ctrl+C：仅当"有译文、且输入框里没有选中文字"时才解释为复制译文
-        if (
-            keyval in (Gdk.KEY_c, Gdk.KEY_C)
-            and _state & Gdk.ModifierType.CONTROL_MASK
-            and not _state & Gdk.ModifierType.SHIFT_MASK
-        ):
-            return self._copy_result_if_appropriate()
         return False
 
     def _copy_result_if_appropriate(self) -> bool:
@@ -345,10 +354,21 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             # 用户在输入框里选了文字，交回系统默认的复制行为
             return False
         self._clipboard.write_text(result)
-        self._show_copied_feedback()
         if self._config.close_after_copy:
-            self._dismiss()
+            self._hint.set_text("已复制")
+            serial = self._present_serial
+            GLib.timeout_add(COPIED_FEEDBACK_MS, lambda: self._dismiss_and_restore(serial))
+        else:
+            self._show_copied_feedback()
         return True
+
+    def _dismiss_and_restore(self, serial: int) -> bool:
+        self._hint.set_text(HINT_TEXT)
+        if serial != self._present_serial:
+            # 这期间窗口被重新唤起过，别把新窗口也关掉
+            return GLib.SOURCE_REMOVE
+        self._dismiss()
+        return GLib.SOURCE_REMOVE
 
     def _show_copied_feedback(self) -> None:
         self._hint.set_text("已复制")
@@ -394,6 +414,15 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             self._on_submit(text)
         else:
             log.debug("window: submit requested (translation lands in M3)")
+        # 提交后收敛选区：否则"重新唤起时的全选"会一直留着，让随后的 Ctrl+C
+        # 被误判成"用户在复制选中的文字"，而不去复制译文
+        self._collapse_selection()
+
+    def _collapse_selection(self) -> None:
+        """光标移到末尾并清除选区（select_range 传同一个 iter 即零长度选区）。"""
+        self._pending_select_all = False
+        end = self._buffer.get_end_iter()
+        self._buffer.select_range(end, end)
 
     # ------------------------------------------------------------------ 内容
 
@@ -405,11 +434,40 @@ class TranslatorWindow(Gtk.ApplicationWindow):
 
     def set_text(self, text: str, *, select_all: bool = True) -> None:
         self._buffer.set_text(text)
-        if select_all and text:
+        if select_all:
+            self._select_all()
+
+    def _select_all(self) -> None:
+        """全选输入框内容：重新唤起后直接键入即可整体替换。"""
+        if not self.text:
+            return
+        self._pending_select_all = True
+        self._buffer.select_range(
+            self._buffer.get_start_iter(), self._buffer.get_end_iter()
+        )
+        self._input.scroll_to_iter(self._buffer.get_start_iter(), 0.0, False, 0.0, 0.0)
+        expected = self.text
+        log.debug(
+            "window: select-all applied (has_selection=%s)", self._buffer.get_has_selection()
+        )
+        # 实测：窗口呈现后焦点才真正落定，GTK 会在那之后把选择清掉（文本不变）。
+        # 因此在焦点稳定后补若干次选中；一旦用户开始输入或文本被改动就立即收手。
+        for delay_ms in (250, 600):
+            GLib.timeout_add(delay_ms, lambda: self._reassert_selection(expected))
+
+    def _reassert_selection(self, expected_text: str) -> bool:
+        if self._user_edited or self.text != expected_text:
+            return GLib.SOURCE_REMOVE
+        if not self._buffer.get_has_selection():
+            log.debug("window: re-asserting select-all after focus settled")
             self._buffer.select_range(
                 self._buffer.get_start_iter(), self._buffer.get_end_iter()
             )
-            self._input.scroll_to_iter(self._buffer.get_start_iter(), 0.0, False, 0.0, 0.0)
+        return GLib.SOURCE_REMOVE
+
+    def _clear_pending_select_all(self) -> bool:
+        self._pending_select_all = False
+        return GLib.SOURCE_REMOVE
 
     def _on_buffer_changed(self, buffer) -> None:
         self._placeholder.set_visible(buffer.get_char_count() == 0)
@@ -476,6 +534,8 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         # 用户已经改过的内容不会被冲掉
         if text == self._last_clipboard_text:
             log.debug("clipboard: unchanged, keeping current input")
+            # 内容不变就保留用户的编辑，但仍然全选，方便直接键入替换
+            self._select_all()
             return
         # 没有文本 → 清空输入框（规格 §8）
         self._last_clipboard_text = text
@@ -485,6 +545,13 @@ class TranslatorWindow(Gtk.ApplicationWindow):
     # ------------------------------------------------------------------ 失焦
 
     def _on_active_changed(self, *_args) -> None:
+        if self.is_active():
+            # 焦点真正落定后再补一次全选（GTK 会在焦点切换时清掉之前的选择）
+            if self._pending_select_all and not self._user_edited:
+                self._buffer.select_range(
+                    self._buffer.get_start_iter(), self._buffer.get_end_iter()
+                )
+            return
         if self.is_active() or not self._config.hide_on_focus_loss:
             return
         if not self.get_visible():
@@ -512,6 +579,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         """
         _ = activation_token
         self._last_present_us = GLib.get_monotonic_time()
+        self._present_serial += 1
         if arm_key_guard:
             self._guard_active = True
             self._swallowed_keys = 0
@@ -524,4 +592,6 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         # 这里刻意不动输入框内容与选区：剪贴板若变了，读回来时会整体覆盖并全选；
         # 若没变，则保留用户的编辑与光标位置。
         self._start_clipboard_prefill()
+        # 只有呈现后的一小段时间内才允许反复补选，避免长期干扰用户的光标操作
+        GLib.timeout_add(1500, self._clear_pending_select_all)
         log.debug("window: presented")

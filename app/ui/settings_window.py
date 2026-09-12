@@ -41,6 +41,8 @@ class SettingsWindow(Adw.PreferencesWindow):
 
         self.set_search_enabled(False)
         self.set_default_size(520, 560)
+        # 关闭即隐藏：实例复用，避免关闭后引用到已销毁的窗口
+        self.set_hide_on_close(True)
         self.add(self._build_general_page())
         self.add(self._build_deepl_page())
 
@@ -111,19 +113,16 @@ class SettingsWindow(Adw.PreferencesWindow):
 
         configured, masked, source = self._secrets.status()
         self._api_key_row = Adw.PasswordEntryRow(title="API Key")
-        if configured and source == "keyring":
-            self._api_key_row.set_text(masked)
         self._api_key_row.set_show_apply_button(True)
         self._api_key_row.connect("apply", self._on_api_key_applied)
         group.add(self._api_key_row)
 
-        if configured and source == "env":
-            note = Adw.ActionRow(
-                title="当前 Key 来自环境变量 DEEPL_API_KEY",
-                subtitle="在密钥环里保存一份可以覆盖它",
-            )
-            note.set_sensitive(False)
-            group.add(note)
+        # 输入框刻意留空：里面不放任何 Key 内容，点眼睛也无从泄漏；
+        # 掩码单独用一行展示（规格 FR-SET-4）。
+        self._key_status_row = Adw.ActionRow(title="已保存的 Key")
+        self._key_status_row.set_sensitive(False)
+        group.add(self._key_status_row)
+        self._update_key_status()
 
         self._endpoint_row = Adw.ComboRow(
             title="Endpoint",
@@ -159,13 +158,23 @@ class SettingsWindow(Adw.PreferencesWindow):
 
     def _on_api_key_applied(self, row: Adw.PasswordEntryRow) -> None:
         value = row.get_text().strip()
-        if not value or value.startswith("•"):
+        if not value:
+            # 没输入内容就是"不改动"，避免误删已保存的 Key
             return
         if self._secrets.store(value):
-            row.set_text(mask(value))
+            row.set_text("")
+            self._update_key_status()
             self._test_row.set_subtitle("已保存 API Key，可测试连接")
         else:
             self._test_row.set_subtitle("保存失败：系统密钥环不可用")
+
+    def _update_key_status(self) -> None:
+        configured, masked, source = self._secrets.status()
+        if not configured:
+            self._key_status_row.set_subtitle("未配置")
+            return
+        origin = "系统密钥环" if source == "keyring" else "环境变量 DEEPL_API_KEY"
+        self._key_status_row.set_subtitle(f"{masked}　（来源：{origin}）")
 
     def _on_endpoint_changed(self, row: Adw.ComboRow, _param) -> None:
         selected = row.get_selected()

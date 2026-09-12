@@ -109,5 +109,6 @@ class ClipboardManager:
         if clipboard is None:
             log.warning("clipboard: no display, cannot write")
             return
-        clipboard.set_text(text)
+        # GTK4 的 GdkClipboard 没有 set_text()（那是我记错的 API），要经由 ContentProvider
+        clipboard.set_content(Gdk.ContentProvider.new_for_value(text))
         log.debug("clipboard: result copied (%d chars)", len(text))

@@ -77,6 +77,7 @@ class TranslatorApplication(Adw.Application):
         self._config = self._config_manager.load()
         setup_logging(self._config.log_level)
         log.info("%s %s starting (pid %s)", APP_NAME, VERSION, os.getpid())
+        self._log_display_backend()
 
         self._runner = AsyncRunner()
         self._service = TranslationService(self._config, self._secrets)
@@ -155,6 +156,14 @@ class TranslatorApplication(Adw.Application):
         except Exception:  # noqa: BLE001 - 兜底，避免注册流程静默失败
             log.exception("global shortcut registration crashed")
         return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def _log_display_backend() -> None:
+        """记录实际生效的显示后端：XWayland 与原生 Wayland 的行为差异很大，排查时必须知道。"""
+        from gi.repository import Gdk
+
+        display = Gdk.Display.get_default()
+        log.info("display backend: %s", type(display).__name__ if display else "none")
 
     def _on_shortcut_status(self, ok: bool, error: str | None) -> None:
         self.shortcut_ok = ok
