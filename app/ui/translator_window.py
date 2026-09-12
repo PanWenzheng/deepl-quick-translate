@@ -1,7 +1,7 @@
 """翻译窗口。
 
-M2 范围：剪贴板预填、多行输入、输入法友好的 Enter/Shift+Enter、失焦自动隐藏。
-翻译请求与结果展示在 M3 接入。
+已实现：剪贴板预填、多行输入、输入法友好的 Enter/Shift+Enter、失焦自动隐藏，
+以及翻译请求的加载态、结果与错误的展示。
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from gi.repository import Gdk, GLib, Gtk
 from ..clipboard.manager import ClipboardManager
 from ..config.manager import Config
 from ..constants import APP_NAME
+from ..deepl.errors import TranslationError
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,13 @@ CSS = b"""
 .translator-result {
     font-size: 15px;
 }
+.translator-detail {
+    font-size: 12px;
+    opacity: 0.7;
+}
+.translator-error {
+    color: #c01c28;
+}
 """
 
 # 输入框自动增长的高度上限，超过后输入框内部滚动
@@ -78,10 +86,13 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         application: Gtk.Application,
         config: Config,
         on_submit: Callable[[str], None] | None = None,
+        on_dismiss: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(application=application, title=APP_NAME)
         self._config = config
         self._on_submit = on_submit
+        self._on_dismiss = on_dismiss
+        self._busy = False
         self._clipboard = ClipboardManager()
         self._last_present_us = 0
         self._guard_active = False
@@ -146,12 +157,25 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         header.append(input_overlay)
         header.append(self._settings_button)
 
-        self._result = Gtk.Label(label="")
-        self._result.set_xalign(0)
-        self._result.set_wrap(True)
-        self._result.set_selectable(True)
-        self._result.add_css_class("translator-result")
-        self._result.set_visible(False)
+        self._result_text = Gtk.Label(label="")
+        self._result_text.set_xalign(0)
+        self._result_text.set_wrap(True)
+        self._result_text.set_selectable(True)
+        self._result_text.add_css_class("translator-result")
+
+        self._result_detail = Gtk.Label(label="")
+        self._result_detail.set_xalign(0)
+        self._result_detail.set_wrap(True)
+        self._result_detail.add_css_class("translator-detail")
+        self._result_detail.set_visible(False)
+
+        self._result_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._result_box.append(self._result_text)
+        self._result_box.append(self._result_detail)
+        self._result_box.set_visible(False)
+
+        self._result_separator = Gtk.Separator()
+        self._result_separator.set_visible(False)
 
         self._hint = Gtk.Label(label="Enter 翻译 · Shift+Enter 换行 · Esc 关闭")
         self._hint.set_xalign(0)
@@ -164,7 +188,8 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         surface.set_margin_start(16)
         surface.set_margin_end(16)
         surface.append(header)
-        surface.append(self._result)
+        surface.append(self._result_separator)
+        surface.append(self._result_box)
         surface.append(self._hint)
         self.set_child(surface)
 
@@ -239,7 +264,7 @@ class TranslatorWindow(Gtk.ApplicationWindow):
     def _on_key_pressed_bubble(self, _controller, keyval, _keycode, _state) -> bool:
         if keyval == Gdk.KEY_Escape:
             log.debug("window: Esc pressed, hiding")
-            self.hide()
+            self._dismiss()
             return True
         return False
 
@@ -260,8 +285,13 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             return False
 
     def _submit(self) -> None:
+        if self._busy:
+            # 规格 FR-SUBMIT-2：请求进行中再按 Enter 一律忽略
+            log.debug("window: submit ignored (request already in flight)")
+            return
         text = self.text
         if not text.strip():
+            # 规格 FR-SUBMIT-3：空输入不发送请求，窗口保持打开
             log.debug("window: submit ignored (empty input)")
             return
         if self._on_submit is not None:
@@ -287,6 +317,48 @@ class TranslatorWindow(Gtk.ApplicationWindow):
 
     def _on_buffer_changed(self, buffer) -> None:
         self._placeholder.set_visible(buffer.get_char_count() == 0)
+
+    # ------------------------------------------------------------------ 结果与状态
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
+    def show_loading(self) -> None:
+        self._busy = True
+        self._result_text.remove_css_class("translator-error")
+        self._result_text.set_text("翻译中…")
+        self._result_detail.set_visible(False)
+        self._show_result_area(True)
+
+    def show_result(self, text: str) -> None:
+        self._busy = False
+        self._result_text.remove_css_class("translator-error")
+        self._result_text.set_text(text)
+        self._result_detail.set_visible(False)
+        self._show_result_area(True)
+
+    def show_error(self, error: TranslationError) -> None:
+        self._busy = False
+        main, detail = error.user_message
+        if not main:
+            self.clear_result()
+            return
+        self._result_text.add_css_class("translator-error")
+        self._result_text.set_text(main)
+        self._result_detail.set_text(detail)
+        self._result_detail.set_visible(bool(detail))
+        self._show_result_area(True)
+
+    def clear_result(self) -> None:
+        self._busy = False
+        self._result_text.set_text("")
+        self._result_detail.set_text("")
+        self._show_result_area(False)
+
+    def _show_result_area(self, visible: bool) -> None:
+        self._result_separator.set_visible(visible)
+        self._result_box.set_visible(visible)
 
     # ------------------------------------------------------------------ 剪贴板预填
 
@@ -324,7 +396,13 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         if GLib.get_monotonic_time() - self._last_present_us < FOCUS_LOSS_GRACE_US:
             return
         log.debug("window: focus lost, hiding")
+        self._dismiss()
+
+    def _dismiss(self) -> None:
+        """隐藏窗口并通知上层（用于取消进行中的请求）。"""
         self.hide()
+        if self._on_dismiss is not None:
+            self._on_dismiss()
 
     def present_with_focus(
         self, *, arm_key_guard: bool = False, activation_token: str | None = None
@@ -338,6 +416,9 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._apply_activation_token(activation_token)
         self.present()
         self._input.grab_focus()
+        if not self._busy:
+            # 上一次的翻译结果不属于这次唤起
+            self.clear_result()
         # 这里刻意不动输入框内容与选区：剪贴板若变了，读回来时会整体覆盖并全选；
         # 若没变，则保留用户的编辑与光标位置。
         self._start_clipboard_prefill()

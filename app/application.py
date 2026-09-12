@@ -10,8 +10,12 @@ import sys
 
 from gi.repository import Adw, Gio, GLib
 
+from .async_runner import AsyncRunner
 from .config.manager import Config, ConfigManager
+from .config.secret import SecretManager
 from .constants import APP_ID, APP_NAME, VERSION
+from .deepl.errors import TranslationError
+from .deepl.service import TranslationService
 from .logging_setup import setup_logging
 from .shortcuts.manager import ShortcutManager
 from .ui.translator_window import TranslatorWindow
@@ -29,6 +33,9 @@ USAGE = f"""用法：{APP_NAME} [选项]
   --quit          退出正在运行的实例
   --verbose       输出调试日志
   --version       显示版本
+  --set-api-key   把 DeepL API Key 写入系统密钥环（不经过图形界面）
+  --api-key-status 查看 API Key 配置状态
+  --clear-api-key 从系统密钥环删除 API Key
   -h, --help      显示本帮助
 """
 
@@ -47,9 +54,14 @@ class TranslatorApplication(Adw.Application):
             flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
         )
         self._config_manager = ConfigManager()
+        self._secrets = SecretManager()
         self._config: Config = Config()
         self._window: TranslatorWindow | None = None
         self._shortcuts: ShortcutManager | None = None
+        self._runner: AsyncRunner | None = None
+        self._service: TranslationService | None = None
+        self._request_token: object | None = None
+        self._request_future = None
         self._last_activation_us = 0
         self._debounced_activations = 0
         self.shortcut_ok: bool = False
@@ -63,6 +75,9 @@ class TranslatorApplication(Adw.Application):
         self._config = self._config_manager.load()
         setup_logging(self._config.log_level)
         log.info("%s %s starting (pid %s)", APP_NAME, VERSION, os.getpid())
+
+        self._runner = AsyncRunner()
+        self._service = TranslationService(self._config, self._secrets)
 
         # 即使没有任何窗口，进程也要常驻
         self.hold()
@@ -80,6 +95,10 @@ class TranslatorApplication(Adw.Application):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signum, self._on_signal)
 
     def do_shutdown(self) -> None:
+        self._cancel_current_request()
+        if self._runner is not None:
+            self._runner.shutdown()
+            self._runner = None
         if self._shortcuts is not None:
             self._shortcuts.unregister()
         log.info("shutdown complete")
@@ -161,15 +180,65 @@ class TranslatorApplication(Adw.Application):
         self, *, arm_key_guard: bool = False, activation_token: str | None = None
     ) -> None:
         if self._window is None:
-            self._window = TranslatorWindow(self, self._config, on_submit=self._on_submit)
+            self._window = TranslatorWindow(
+                self,
+                self._config,
+                on_submit=self._on_submit,
+                on_dismiss=self._on_dismiss,
+            )
         self._window.present_with_focus(
             arm_key_guard=arm_key_guard, activation_token=activation_token
         )
 
     def _on_submit(self, text: str) -> None:
-        """提交入口。真正的 DeepL 请求在 M3 接入；这里只记录长度，不记录内容。"""
-        # 隐私约束：日志中绝不出现用户文本
-        log.debug("translation requested (%d chars); DeepL call lands in M3", len(text))
+        """提交翻译。日志只记录长度，绝不记录内容。"""
+        log.debug("translation requested (%d chars)", len(text))
+        if self._runner is None or self._service is None or self._window is None:
+            return
+
+        self._cancel_current_request()
+        self._window.show_loading()
+
+        token = object()
+        self._request_token = token
+        self._request_future = self._runner.submit(
+            self._service.translate(text),
+            lambda result, error: self._on_translation_done(token, result, error),
+        )
+
+    def _on_translation_done(self, token: object, result, error) -> bool:
+        if token is not self._request_token:
+            # 请求已被取消或被新请求取代：绝不更新界面（规格 FR-SUBMIT-6）
+            log.debug("dropping stale translation result")
+            return False
+        self._request_token = None
+        self._request_future = None
+        if self._window is None:
+            return False
+
+        if error is not None:
+            if isinstance(error, TranslationError):
+                self._window.show_error(error)
+            else:
+                log.error("unexpected translation failure: %s", error)
+                self._window.show_error(TranslationError("unexpected", detail=str(error)))
+        else:
+            self._window.show_result(result.text)
+        return False
+
+    def _cancel_current_request(self) -> None:
+        """取消进行中的请求，并阻止迟到结果更新界面。"""
+        if self._request_future is not None:
+            if self._request_future.cancel():
+                log.debug("translation request cancelled")
+            self._request_future = None
+        self._request_token = None
+        if self._window is not None and self._window.busy:
+            self._window.clear_result()
+
+    def _on_dismiss(self) -> None:
+        """窗口隐藏（Esc / 失焦）时调用。"""
+        self._cancel_current_request()
 
     def _on_signal(self) -> bool:
         log.info("signal received; quitting")

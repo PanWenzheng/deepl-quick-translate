@@ -12,6 +12,8 @@ from unittest import mock
 from app.config.manager import Config, ConfigManager, config_dir
 from app.clipboard.manager import looks_like_file_paths
 from app.constants import DEFAULT_ENDPOINT, DEFAULT_SHORTCUT_ACCEL
+from app.deepl.client import parse_error_body
+from app.deepl.service import detect_direction
 from app.shortcuts.accels import (
     gtk_accel_to_display,
     gtk_accel_to_xdg,
@@ -118,6 +120,46 @@ class ClipboardHeuristicsTest(unittest.TestCase):
         self.assertFalse(looks_like_file_paths("请把 /etc 下的配置发我"))
         self.assertFalse(looks_like_file_paths(""))
         self.assertFalse(looks_like_file_paths("https://example.com/a.png"))
+
+
+class LanguageDirectionTest(unittest.TestCase):
+    def test_english_goes_to_simplified_chinese(self) -> None:
+        self.assertEqual(detect_direction("How are you today?"), ("EN", "ZH-HANS"))
+        self.assertEqual(detect_direction("hello"), ("EN", "ZH-HANS"))
+
+    def test_chinese_goes_to_american_english(self) -> None:
+        self.assertEqual(detect_direction("你今天怎么样？"), ("ZH", "EN-US"))
+        self.assertEqual(detect_direction("你好"), ("ZH", "EN-US"))
+
+    def test_mixed_and_other_languages_fall_back_to_auto(self) -> None:
+        self.assertEqual(detect_direction("你好 hello"), (None, "ZH-HANS"))
+        # 注意：按规格 §15 的"拉丁字母 = 英文"规则，法语这类拉丁字母文本会被判成 EN。
+        # 与 §17 的"Bonjour 走自动检测"存在矛盾，当前实现遵循 §15（见规格附录 A）。
+        self.assertEqual(detect_direction("Bonjour tout le monde"), ("EN", "ZH-HANS"))
+        self.assertEqual(detect_direction("12345 ！！！"), (None, "ZH-HANS"))
+
+
+class DeepLErrorParsingTest(unittest.TestCase):
+    class _Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            if isinstance(self._payload, Exception):
+                raise self._payload
+            return self._payload
+
+    def test_flat_error_body(self) -> None:
+        response = self._Response({"message": "Value for 'target_lang' not supported.", "code": "x"})
+        self.assertEqual(parse_error_body(response), ("x", "Value for 'target_lang' not supported."))
+
+    def test_nested_infrastructure_error_body(self) -> None:
+        response = self._Response({"error": {"message": "Bad Gateway."}})
+        self.assertEqual(parse_error_body(response), (None, "Bad Gateway."))
+
+    def test_non_json_body(self) -> None:
+        response = self._Response(ValueError("not json"))
+        self.assertEqual(parse_error_body(response), (None, None))
 
 
 if __name__ == "__main__":
