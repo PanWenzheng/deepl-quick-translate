@@ -51,6 +51,10 @@ chmod 0755 "$staging/usr/bin/$pkg_name"
 install -m 0644 "$repo_dir/data/$app_id.desktop" "$staging/usr/share/applications/$app_id.desktop"
 install -m 0644 "$repo_dir/data/icons/$app_id.svg" \
     "$staging/usr/share/icons/hicolor/scalable/apps/$app_id.svg"
+# 同时提供标准尺寸 PNG：避免桌面环境对 SVG 的额外解释（例如按符号化图标处理时
+# 把所有填充色替换成单色，图形就变成一个纯色方块）
+python3 "$repo_dir/packaging/make-icons.py" \
+    "$repo_dir/data/icons/$app_id.svg" "$staging/usr/share/icons/hicolor" >/dev/null
 install -m 0644 "$repo_dir/docs/SPEC.md" "$staging/usr/share/doc/$pkg_name/SPEC.md"
 install -m 0644 "$repo_dir/README.md" "$staging/usr/share/doc/$pkg_name/README.md"
 
