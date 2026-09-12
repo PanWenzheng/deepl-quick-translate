@@ -18,7 +18,7 @@
 
 ---
 
-## 1. 目标平台（已在本机实测确认）
+## 1. 目标平台（已在目标环境实测确认）
 
 本节所有版本号均为在目标机器上实际执行命令得到的输出，非推测。
 
@@ -420,8 +420,8 @@ deepl_tool/
 
 ## 10. 打包与安装
 
-**产出**：`.deb`（用 `packaging/build-deb.sh` 构建；本机只有 `dpkg-deb`，
-没有 `dpkg-buildpackage` / `debhelper`，因此直接组装目录树打包，无构建期依赖）
+**产出**：`.deb`（用 `packaging/build-deb.sh` 构建；直接组装目录树交给 `dpkg-deb`，
+不依赖 `dpkg-buildpackage` / `debhelper`，无构建期依赖）
 
 **安装后布局**
 
@@ -591,7 +591,7 @@ V2 预留：本地词典 Provider、翻译历史、TTS、OCR、AI Rewrite、更�
 
 | # | 结论 | 证据 |
 | --- | --- | --- |
-| C1 | 门户确实提供 `GlobalShortcuts`，但本机 `version = 1`；公开文档描述的是 version 2（v2 才新增 `activation_token` 选项） | D-Bus introspection + 门户规范 |
+| C1 | 门户确实提供 `GlobalShortcuts`，但目标环境 `version = 1`；公开文档描述的是 version 2（v2 才新增 `activation_token` 选项） | D-Bus introspection + 门户规范 |
 | C2 | **必须有可识别的应用身份**：未安装 `<app_id>.desktop` 时，宿主注册失败并连带 `CreateSession` 被拒 | `Could not register app ID: App info not found for 'io.github.panwenzheng.DeepLQuickTranslate'`，随后 `NotAllowed: An app id is required` |
 | C3 | 装好 `.desktop` 后宿主注册通过，`CreateSession` + `BindShortcuts` 正常，GNOME 弹出系统对话框要求用户按键确认 | `portal: host app registered as …`，用户按键后 `shortcuts bound: [('toggle-translator', {'description': '唤起翻译窗口', 'trigger_description': 'Press <Control><Alt>space'})]` |
 | C4 | **确认只发生一次**：换新进程、重建会话后再次绑定同一 app id 的快捷键只需 0.3s，无任何对话框 | 同一探针连续两次运行，第二次 `real 0m0.306s` |

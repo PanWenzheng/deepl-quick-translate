@@ -4,7 +4,10 @@ from __future__ import annotations
 
 # kind → （英文主文案, 中文说明行）
 KIND_MESSAGES: dict[str, tuple[str, str]] = {
-    "no_api_key": ("API key required", "请先设置 DeepL API Key（./run.sh --set-api-key）"),
+    "no_api_key": (
+        "API key required",
+        "请先设置 DeepL API Key：点右上角齿轮进入设置，或运行 deepl-quick-translate --set-api-key",
+    ),
     "auth": ("Translation failed", "API Key 无效或缺少权限，请检查 API Key"),
     "endpoint_mismatch": (
         "Wrong endpoint",

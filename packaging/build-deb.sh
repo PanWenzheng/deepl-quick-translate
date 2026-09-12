@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 构建 .deb。这台机器只有 dpkg-deb（没有 dpkg-buildpackage / debhelper），
-# 所以直接组装目录树再打包，不引入构建期依赖。
+# 构建 .deb：直接组装目录树后交给 dpkg-deb，不依赖 dpkg-buildpackage / debhelper，
+# 因此在只装了基础工具的环境里也能打包。
 #
 # 用法：packaging/build-deb.sh [输出目录]
 set -euo pipefail
