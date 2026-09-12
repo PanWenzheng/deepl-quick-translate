@@ -298,8 +298,12 @@ class TranslatorApplication(Adw.Application):
         """按配置补齐开机自启动文件（默认关闭，只有用户开启过才创建）。"""
         from .config import autostart
 
-        if self._config.start_on_login and not autostart.is_enabled():
-            autostart.set_enabled(True)
+        if self._config.start_on_login:
+            if not autostart.is_enabled():
+                autostart.set_enabled(True)
+            else:
+                # 从开发目录换成已安装的二进制时，把旧的 Exec 替换掉
+                autostart.refresh_if_needed()
         return GLib.SOURCE_REMOVE
 
     def _check_connection(self, done) -> None:

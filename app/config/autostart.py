@@ -75,3 +75,23 @@ def set_enabled(enabled: bool) -> bool:
 
 def is_enabled() -> bool:
     return autostart_path().exists()
+
+
+def refresh_if_needed() -> bool:
+    """已启用时，若 Exec 指向的不是当前解析出的命令就重写。
+
+    典型场景：先在开发目录用 ``run.sh`` 开启自启动，后来装了 .deb，此时应当把
+    Exec 换成 ``/usr/bin/deepl-quick-translate``，否则自启动会一直跑旧路径。
+    """
+    path = autostart_path()
+    if not path.exists():
+        return False
+    expected = launch_command("--background")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if f"Exec={expected}\n" in content:
+        return False
+    log.info("autostart: Exec changed, rewriting for %s", expected)
+    return set_enabled(True)
