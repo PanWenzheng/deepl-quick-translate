@@ -20,7 +20,7 @@ jobs:
     name: 单元测试
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: 安装运行依赖
         run: |
@@ -40,7 +40,7 @@ jobs:
     name: 构建 .deb
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: 安装构建依赖
         run: |
@@ -58,7 +58,7 @@ jobs:
             'usr/bin/deepl-quick-translate|applications/.*\.desktop|hicolor/.*/apps/.*\.(svg|png)|doc/.*/(README\.md|SPEC\.md|copyright)'
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deepl-quick-translate-deb
           path: dist/*.deb
