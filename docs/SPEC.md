@@ -46,7 +46,7 @@
 | ID | 决策 | 理由 | 被否方案 |
 | --- | --- | --- | --- |
 | **D1** | 工具包：**GTK4 + libadwaita（PyGObject）** | 已随系统安装（零额外依赖）；Wayland 原生；中文输入法走 GTK 原生 IM context，preedit 处理最可靠；外观与 GNOME 50 一致；打包体积小 | PySide6：apt 有 6.10.2 但需额外安装数百 MB，且 Python 3.14 + Qt Wayland IME 需要额外验证 |
-| **D2** | 全局快捷键：**门户为主 + GSettings 兜底** | 门户是文档指定的标准路径且确认可用；GSettings `media-keys` 自定义快捷键可在门户不可用时保证功能 | 仅门户（首次必须用户手动确认，单点失败）；仅 GSettings（不是标准路径） |
+| **D2** | 全局快捷键：**GSettings 为主 + 门户可选**（2026-09-12 修订） | 实测门户路径下合成器会把触发按键的状态带进新窗口：每次唤起泄漏数十至数百个按键事件，且用户随后第一次按该键会被 GDK 当作重复丢弃（中文输入法的"空格选第一个候选"因此要按两次）。GSettings 路径由 GNOME 抓键后命令唤起，两个问题都不存在，也无需首次确认；代价是写入用户 dconf 一条自定义快捷键 | 门户为主（原方案，存在上述两个实测缺陷） |
 | **D3** | 单实例：**`Gtk.Application` 的 D-Bus 单实例机制** | GApplication 自带"第二个实例把参数转交主实例后退出"，天然满足需求；免去手写锁文件/D-Bus 名 | 手写 D-Bus 名抢占、锁文件 |
 | **D4** | HTTP 客户端：**httpx**（`python3-httpx` 0.28.1） | 原生 async、超时/取消语义清晰、依赖小 | `requests`（同步，需线程池）；DeepL 官方 SDK（功能超出 V1 需要，且多一层封装） |
 | **D5** | 凭据：**Secret Service（`python3-secretstorage`）** | 文档明确要求，系统已有 gnome-keyring | 明文 JSON |
@@ -125,15 +125,16 @@ Ctrl + Alt + Space
 | 编号 | 规格 |
 | --- | --- |
 | FR-SHORTCUT-1 | 默认快捷键为 `Ctrl + Alt + Space`，且全局有效（窗口未聚焦时同样生效）。 |
-| FR-SHORTCUT-2 | 通过 XDG Desktop Portal `org.freedesktop.portal.GlobalShortcuts` 注册：`CreateSession` → `BindShortcuts`（`preferred_trigger = <Control><Alt>space`）→ 监听 `Activated` 信号。 |
-| FR-SHORTCUT-3 | **首次注册必有一次用户确认**：GNOME 的门户实现会忽略 `preferred_trigger`，弹出系统窗口要求用户按下目标组合键。这是平台行为，不是缺陷，需要在首次启动引导与设置页面中明确告知用户。 |
-| FR-SHORTCUT-4 | 该确认**每个应用只出现一次**：GNOME 按 app id 记住绑定，之后每次启动静默恢复（实测第二次注册 0.3s 内完成、无对话框）。GlobalShortcuts 协议里**没有** `restore_token` 之类的持久化字段，无需自行保存令牌；只有用户清除系统设置或改绑才会再次提示。 |
-| FR-SHORTCUT-5 | 门户会话（session）与进程同生命周期；进程退出即注销绑定。 |
+| FR-SHORTCUT-2 | **默认后端**：GSettings `org.gnome.settings-daemon.plugins.media-keys` 的自定义快捷键，选一个空槽位写入 `name` / `command` / `binding`，命令为 `deepl-quick-translate --toggle`（由已在运行的主实例接管）。 |
+| FR-SHORTCUT-3 | **可选后端**：XDG Desktop Portal `org.freedesktop.portal.GlobalShortcuts`（`CreateSession` → `BindShortcuts` → 监听 `Activated`）。该路径下 GNOME 会弹系统窗口要求用户手动按键**确认一次**，并存在 FR-SHORTCUT-11 描述的两个缺陷，仅在用户显式选择时使用。 |
+| FR-SHORTCUT-4 | 门户后端的确认**每个应用只出现一次**：GNOME 按 app id 记住绑定，之后每次启动静默恢复（实测第二次注册 0.3s 内完成、无对话框）。GlobalShortcuts 协议里**没有** `restore_token` 之类的持久化字段，无需自行保存令牌。 |
+| FR-SHORTCUT-5 | 门户会话（session）与进程同生命周期；GSettings 后端则在退出时删除自己写入的条目并把列表项回收。 |
 | FR-SHORTCUT-6 | 注册失败必须在 UI 明确提示 `Shortcut unavailable`，并引导用户进入设置更换快捷键；**不得静默失败**。 |
-| FR-SHORTCUT-7 | 兜底路径：当门户不可用或用户拒绝授权时，支持通过 GSettings `org.gnome.settings-daemon.plugins.media-keys` 的自定义快捷键绑定，触发命令 `deepl-quick-translate --toggle`（由已在运行的主实例接管）。此路径可精确静默绑定 `Ctrl+Alt+Space`，代价是写入用户 dconf，需在设置页明示。 |
+| FR-SHORTCUT-7 | GSettings 后端的代价必须对用户透明：会写入用户 dconf 一条自定义快捷键（GNOME 设置 → 键盘 → 自定义快捷键里可见，可自行修改或删除），设置页需要明示。写入范围仅限一个空槽位（`custom0`…`custom31`）与列表中的一项，不触碰其他快捷键。 |
 | FR-SHORTCUT-8 | 用户可在设置中更换快捷键（门户路径用 `ConfigureShortcuts`，GSettings 路径直接改写条目）。 |
 | FR-SHORTCUT-9 | 全局快捷键只此一个，不设计第二个。 |
 | FR-SHORTCUT-10 | 门户要求调用方具备可识别的应用身份：系统数据目录中必须存在 `<app_id>.desktop`，否则 xdg-desktop-portal 先以 `App info not found for '<app_id>'` 拒绝宿主注册，再以 `An app id is required` 拒绝 `CreateSession`。因此 `.desktop` 是门户路径的**硬依赖**（.deb 安装时提供；开发环境用 `tools/dev-install.sh` 装到 `~/.local/share`）。 |
+| FR-SHORTCUT-11 | **门户后端的两个已知缺陷**（它不作为默认的原因，实测见附录 C）：① 合成器会把触发键的按下状态带进新窗口，GDK 因此持续自动重复该键，每次唤起泄漏数十至数百个按键事件；② 该键的松开事件不会送达应用，用户随后**第一次**按它时会被 GDK 当作重复丢弃——对中文输入法就意味着"空格选第一个候选"要按两次。应用侧的按键守卫只能吞掉 ①，无法修复 ②。 |
 
 ### 4.2 单实例
 
@@ -361,7 +362,7 @@ deepl_tool/
   "version": 1,
   "endpoint": "https://api-free.deepl.com",
   "shortcut": {
-    "backend": "portal",
+    "backend": "gsettings",
     "preferred_trigger": "<Control><Alt>space",
     "gsettings_path": null,
     "command": "deepl-quick-translate --toggle"
@@ -518,7 +519,7 @@ V2 预留：本地词典 Provider、翻译历史、TTS、OCR、AI Rewrite、更�
 
 | 原节 | 原文档 | 本规格 | 原因 |
 | --- | --- | --- | --- |
-| §5 | 门户注册默认 `Ctrl+Alt+Space` | 门户 + GSettings 双路径；明确首次需用户按键确认 | GNOME 门户忽略 `preferred_trigger`，单一路径存在失败风险 |
+| §5 | 通过 XDG 门户注册全局快捷键 | 改为 **GSettings 为主、门户可选** | 门户路径下合成器会把触发键状态带进新窗口，造成按键泄漏与"输入法首键被吞"；GSettings 路径无此问题（实证见附录 C） |
 | §7 | 显示 → 置前 → 获得焦点 → 读取剪贴板 | 保留，并升级为硬性实现约束 | Wayland 下未获得焦点无法读剪贴板 |
 | §11 | 支持多行文本 + `Enter` 提交 | 明确 `Enter` 提交、`Shift+Enter` 换行 | 两者在键位语义上冲突，必须指定其一 |
 | §12 | 输入法确认不应被误判为提交 | 保留，并补充实现要点与 T9 测试用例 | — |
@@ -591,6 +592,8 @@ V2 预留：本地词典 Provider、翻译历史、TTS、OCR、AI Rewrite、更�
 | C7 | `Activated` 信号发在对象路径 `/org/freedesktop/portal/desktop` 上，**会话句柄是信号的第一个参数**，不是信号的对象路径；按 session 路径订阅将永远收不到通知 | 对照实验：按 session 路径订阅无任何回调，去掉路径/sender 过滤后立即收到 |
 | C8 | `Activated` 的 options 里带 `activation_token`，应交给合成器（`Gdk.Toplevel.set_startup_id()`）以走正规激活路径 | 实测信号带 `{'activation_token': 'gnome-shell//5119-39-ubuntu_TIME…'}` |
 | C9 | 走全局快捷键激活的应用，其**触发按键的松开事件可能永远送不到窗口**，GTK 会按系统重复率无限重复该键（实测 5 秒内 160+ 次），必须由应用侧守卫兜住 | 应用日志：`swallowed 163 leaked trigger key event(s) (user-typing)` |
+| C10 | 门户路径存在无法在应用层修复的副作用：用户随后**第一次**按触发键会被 GDK 丢弃（它认为该键仍在按下）。诊断日志显示用户连按两次空格只有一次到达应用，而那一次成功提交了候选 | `window: TRIGGER press time=… chars 0→2`，两次按键仅一条记录 |
+| C11 | **改用 GSettings 后上述两个问题同时消失**：无任何泄漏按键事件，中文输入法一次空格即上屏。另：门户路径本身也会把绑定持久化到 dconf（`~/.config/dconf/user` 中可搜到应用 ID），因此"不写 dconf"并不是门户的优势 | GSettings 路径日志无 `leaked trigger key` 行；`TRIGGER press chars 0→2` 一次成功 |
 
 对实现的影响：
 

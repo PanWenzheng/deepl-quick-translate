@@ -29,7 +29,7 @@ class ConfigDefaultsTest(unittest.TestCase):
         self.assertFalse(config.start_on_login)
         self.assertTrue(config.hide_on_focus_loss)
         self.assertEqual(config.shortcut.preferred_trigger, DEFAULT_SHORTCUT_ACCEL)
-        self.assertEqual(config.shortcut.backend, "portal")
+        self.assertEqual(config.shortcut.backend, "gsettings")
         self.assertIsNone(config.shortcut.gsettings_path)
 
     def test_missing_file_gives_defaults(self) -> None:
@@ -81,7 +81,7 @@ class ConfigDefaultsTest(unittest.TestCase):
             loaded = ConfigManager(path).load()
             self.assertTrue(loaded.close_after_copy)
             self.assertEqual(loaded.endpoint, DEFAULT_ENDPOINT)
-            self.assertEqual(loaded.shortcut.backend, "portal")
+            self.assertEqual(loaded.shortcut.backend, "gsettings")
             self.assertEqual(loaded.shortcut.preferred_trigger, DEFAULT_SHORTCUT_ACCEL)
 
     def test_unknown_keys_are_ignored(self) -> None:

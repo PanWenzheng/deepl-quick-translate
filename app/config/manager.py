@@ -46,7 +46,9 @@ def config_path() -> Path:
 class ShortcutConfig:
     """全局快捷键相关配置。"""
 
-    backend: str = "portal"
+    # 默认用 GSettings 自定义快捷键：实测它没有门户路径的按键泄漏与输入法首键丢失问题，
+    # 也不需要首次确认对话框（见规格附录 C）。portal 作为可选后端保留。
+    backend: str = "gsettings"
     preferred_trigger: str = DEFAULT_SHORTCUT_ACCEL
     # GSettings 兜底后端占用的路径，便于退出时清理
     gsettings_path: str | None = None

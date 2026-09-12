@@ -221,12 +221,23 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self.add_controller(bubble)
 
     def _on_key_pressed_capture(self, _controller, keyval, _keycode, _state) -> bool:
+        try:
+            return self._handle_key_pressed_capture(_controller, keyval, _state)
+        except Exception:  # noqa: BLE001 - 守卫绝不能因为日志/诊断代码出错而失效
+            log.exception("window: key handler failed, ignoring key")
+            return False
+
+    def _handle_key_pressed_capture(self, _controller, keyval, _state) -> bool:
         now = GLib.get_monotonic_time()
         if self._guard_active:
             if now >= self._guard_deadline_us:
                 self._end_key_guard("timeout")
             elif keyval == self._trigger_keyval:
-                # 按住热键时会被系统自动重复成一长串，这里只计数，结束时汇总一条日志
+                # 触发键按下，一律吞掉：实测松开事件送不到窗口，GTK 会一直重复它；
+                # 注意**不能**用 im_context_filter_keypress 来判断"输入法是否在组合"——
+                # 它对空格恒返回 True，会把守卫直接放掉，导致泄漏的空格灌进输入框。
+                if self._swallowed_keys == 0:
+                    self._reset_input_method_state(_controller)
                 self._swallowed_keys += 1
                 return True
             else:
@@ -236,6 +247,9 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         # 走到这里说明是用户的真实按键，后续到达的剪贴板预填不应再覆盖输入
         self._user_edited = True
 
+        if keyval == self._trigger_keyval and not self._guard_active:
+            self._diagnose_trigger_press(_controller, _state)
+
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             if _state & Gdk.ModifierType.SHIFT_MASK:
                 return False  # Shift+Enter 交给输入框插入换行
@@ -244,6 +258,48 @@ class TranslatorWindow(Gtk.ApplicationWindow):
             self._submit()
             return True
         return False
+
+    def _diagnose_trigger_press(self, controller, state) -> None:
+        """临时诊断：记录触发键事件的时间戳/修饰键，并观察输入是否随之变化。
+
+        - 若 300ms 后字符数不变 → 输入法根本没处理这一按（被当成重复键忽略）；
+        - 若字符数增加 → 输入法提交了内容，问题在别处。
+        """
+        event_time = "-"
+        try:
+            event = controller.get_current_event()
+            if event is not None:
+                event_time = event.get_time()
+        except Exception:  # noqa: BLE001 - 诊断代码不影响主流程
+            pass
+        chars_before = self._buffer.get_char_count()
+
+        def report() -> bool:
+            log.debug(
+                "window: TRIGGER press time=%s state=%s chars %d→%d",
+                event_time, state, chars_before, self._buffer.get_char_count(),
+            )
+            return GLib.SOURCE_REMOVE
+
+        GLib.timeout_add(300, report)
+
+    def _reset_input_method_state(self, controller) -> None:
+        """热键的按下/松开被系统抓走后，输入法上下文会以为该键仍按着。
+
+        GTK 为此提供了 ``reset_im_context()``（文档：当控件状态与输入法不一致时使用），
+        在检测到泄漏的瞬间调用它，避免用户随后按下的那个键被输入法当成"自动重复"忽略。
+        """
+        try:
+            # 只取时间戳做日志；GdkKeyEvent 在 GTK4 里没有 get_state()，
+            # 这里凡是取不到的一律跳过，绝不能影响吞键逻辑。
+            event = controller.get_current_event()
+            log.debug(
+                "window: first leaked trigger key (time=%s), resetting IM state",
+                event.get_time() if event is not None else "-",
+            )
+            self._input.reset_im_context()
+        except Exception as exc:  # noqa: BLE001 - 诊断/重置失败都不影响吞键
+            log.debug("window: cannot reset input method state (%s)", exc)
 
     def _on_key_released_capture(self, _controller, keyval, _keycode, _state) -> bool:
         # 触发键松开后系统不再重复，泄漏也就结束了
@@ -407,13 +463,19 @@ class TranslatorWindow(Gtk.ApplicationWindow):
     def present_with_focus(
         self, *, arm_key_guard: bool = False, activation_token: str | None = None
     ) -> None:
-        """唤起窗口并确保输入框拿到焦点（后续步骤才能读剪贴板）。"""
+        """唤起窗口并确保输入框拿到焦点（后续步骤才能读剪贴板）。
+
+        ``activation_token`` 目前**刻意不使用**：实测把它交给合成器
+        （``Gdk.Toplevel.set_startup_id()``）之后，由快捷键激活的窗口会把触发按键
+        一并回放给应用，导致输入法把用户随后的第一次空格当成自动重复而忽略。
+        不带 token 呈现（等价于 ``--toggle`` 路径）则一切正常。
+        """
+        _ = activation_token
         self._last_present_us = GLib.get_monotonic_time()
         if arm_key_guard:
             self._guard_active = True
             self._swallowed_keys = 0
             self._guard_deadline_us = self._last_present_us + TRIGGER_KEY_GUARD_MAX_US
-        self._apply_activation_token(activation_token)
         self.present()
         self._input.grab_focus()
         if not self._busy:
@@ -423,24 +485,3 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         # 若没变，则保留用户的编辑与光标位置。
         self._start_clipboard_prefill()
         log.debug("window: presented")
-
-    def _apply_activation_token(self, activation_token: str | None) -> None:
-        """把门户给的 activation token 交给合成器。
-
-        这样合成器知道这次激活源自全局快捷键，才能正确处理焦点与触发按键
-        （否则按键松开事件可能永远送不到窗口，GTK 会一直重复那个键）。
-        """
-        if not activation_token:
-            return
-        try:
-            if not self.get_realized():
-                self.realize()
-            surface = self.get_surface()
-            setter = getattr(surface, "set_startup_id", None)
-            if setter is None:
-                log.debug("window: surface does not support activation tokens")
-                return
-            setter(activation_token)
-            log.debug("window: activation token applied")
-        except Exception as exc:  # noqa: BLE001 - 失败不影响窗口呈现
-            log.debug("window: cannot apply activation token (%s)", exc)
