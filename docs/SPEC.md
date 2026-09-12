@@ -70,6 +70,8 @@
 | Secret Service service 名 | `io.github.panwenzheng.DeepLQuickTranslate` |
 | 界面显示名 | DeepL 快捷翻译 |
 | 项目仓库 | `github.com/PanWenzheng`（GitHub 用户名为 `PanWenzheng`；反向域名部分按 GNOME/Flatpak 约定写小写） |
+| 仓库名 | `deepl-quick-translate`（与可执行文件、`.deb` 包名、桌面文件基名保持一致） |
+| 许可证 | MIT（2026 Pan Wenzheng），正文见仓库根 `LICENSE`，`.deb` 内按 DEP-5 生成 `copyright` |
 
 下文用 `<app_id>` 代指上表第一行的值。
 

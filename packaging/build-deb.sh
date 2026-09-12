@@ -58,6 +58,21 @@ python3 "$repo_dir/packaging/make-icons.py" \
 install -m 0644 "$repo_dir/docs/SPEC.md" "$staging/usr/share/doc/$pkg_name/SPEC.md"
 install -m 0644 "$repo_dir/README.md" "$staging/usr/share/doc/$pkg_name/README.md"
 
+# Debian 策略要求包内带 copyright（DEP-5）。许可证正文从仓库根的 LICENSE 生成，
+# 避免包里的副本和仓库里的正文各写一份、日后改一端忘另一端。
+{
+    cat <<EOF
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: $pkg_name
+Source: https://github.com/PanWenzheng/$pkg_name
+
+Files: *
+Copyright: 2026 Pan Wenzheng
+License: MIT
+$(sed 's/^/ /' "$repo_dir/LICENSE")
+EOF
+} > "$staging/usr/share/doc/$pkg_name/copyright"
+
 # 规范化权限：Debian 包内不应出现组可写，根目录也不能是 mktemp 的 0700
 chmod 0755 "$staging"
 find "$staging" -type d -exec chmod 0755 {} +

@@ -53,6 +53,8 @@ deepl-quick-translate --set-api-key                  # 写入 DeepL API Key（�
 ### 从源码运行
 
 ```sh
+git clone https://github.com/PanWenzheng/deepl-quick-translate.git
+cd deepl-quick-translate
 ./tools/dev-install.sh          # 把 .desktop 装到用户目录（门户识别应用身份的硬依赖）
 ./run.sh --background           # 后台常驻，等待快捷键
 ./run.sh --toggle               # 唤起窗口
@@ -137,3 +139,7 @@ tools/portal_probe.py                   # XDG 门户诊断脚本（排查快捷�
 本项目不是 DeepL 官方项目，与 DeepL SE 无任何关联；DeepL 是 DeepL SE 的商标。
 使用前请在 DeepL 官网申请 API Key，翻译请求受其服务条款与额度限制
 （Free 账户每月 50 万字符）。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 Pan Wenzheng
