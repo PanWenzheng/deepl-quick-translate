@@ -91,6 +91,16 @@ class SettingsWindow(Adw.PreferencesWindow):
         )
         self._close_after_copy_row.connect("notify::active", self._on_close_after_copy_toggled)
         behaviour.add(self._close_after_copy_row)
+
+        self._hide_on_focus_loss_row = Adw.SwitchRow(
+            title="失去焦点时隐藏",
+            subtitle="切到别的窗口、或打开桌面/Dock 菜单时自动收起窗口",
+            active=self._config.hide_on_focus_loss,
+        )
+        self._hide_on_focus_loss_row.connect(
+            "notify::active", self._on_hide_on_focus_loss_toggled
+        )
+        behaviour.add(self._hide_on_focus_loss_row)
         page.add(behaviour)
         return page
 
@@ -112,6 +122,10 @@ class SettingsWindow(Adw.PreferencesWindow):
 
     def _on_close_after_copy_toggled(self, row: Adw.SwitchRow, _param) -> None:
         self._config.close_after_copy = row.get_active()
+        self._on_config_changed()
+
+    def _on_hide_on_focus_loss_toggled(self, row: Adw.SwitchRow, _param) -> None:
+        self._config.hide_on_focus_loss = row.get_active()
         self._on_config_changed()
 
     # ------------------------------------------------------------------ DeepL

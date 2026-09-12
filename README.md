@@ -16,7 +16,8 @@ Spotlight 风格窗口骨架、热键按键守卫、激活去抖。M2 起接入�
 ## 开发运行
 
 ```sh
-./tools/dev-install.sh     # 必需：装 .desktop，否则 XDG 门户拒绝识别应用身份
+./tools/dev-install.sh     # 开发环境必需：装 .desktop（门户识别应用身份用）
+./tools/dev-install.sh --remove   # 清理开发安装（装了 .deb 之后务必执行，否则会盖住系统级桌面文件）
 ./run.sh --background      # 后台常驻，等待 Ctrl+Alt+Space
 ./run.sh --toggle          # 唤起窗口
 ./run.sh --quit            # 退出并注销快捷键

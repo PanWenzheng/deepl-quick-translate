@@ -14,6 +14,27 @@ data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 apps_dir="$data_home/applications"
 icons_dir="$data_home/icons/hicolor/scalable/apps"
 
+# 用户级 .desktop 优先级高于 /usr/share：装了 .deb 之后残留的开发副本会把系统级
+# 那份整个盖住（症状：应用菜单里没有 Settings 动作、Exec 指向开发目录）。
+pkg_installed=no
+if dpkg -s deepl-quick-translate >/dev/null 2>&1; then
+    pkg_installed=yes
+fi
+
+if [ "${1:-}" = "--remove" ]; then
+    rm -f "$apps_dir/$app_id.desktop" "$icons_dir/$app_id.svg"
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps_dir" || true
+    echo "已移除开发安装（用户级 .desktop 与图标）"
+    exit 0
+fi
+
+if [ "$pkg_installed" = yes ] && [ "${1:-}" != "--force" ]; then
+    echo "检测到已安装 .deb：用户级 .desktop 会覆盖系统级，导致菜单项与动作不一致。" >&2
+    echo "如需清理开发安装：$0 --remove" >&2
+    echo "确实要用开发版覆盖，请加 --force。" >&2
+    exit 1
+fi
+
 mkdir -p "$apps_dir" "$icons_dir"
 
 # Exec 指向仓库里的开发入口，这样未安装 .deb 也能真正被唤起
