@@ -91,6 +91,12 @@ class TranslatorApplication(Adw.Application):
             self._on_shortcut_activated,
             on_config_changed=lambda config: self._config_manager.save(config),
         )
+
+        # 桌面文件里的 Settings 动作要在 GNOME 右键菜单里真正可用，应用还需要导出
+        # 同名（小写）的 GApplication 动作——GNOME 对运行中的应用优先走 D-Bus 调用。
+        settings_action = Gio.SimpleAction.new("settings", None)
+        settings_action.connect("activate", lambda *_args: self.open_settings())
+        self.add_action(settings_action)
         # 放在空闲回调里注册，避免拖慢启动
         GLib.idle_add(self._register_shortcuts)
         GLib.idle_add(self._ensure_autostart)
