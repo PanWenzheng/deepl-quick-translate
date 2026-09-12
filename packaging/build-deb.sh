@@ -67,7 +67,7 @@ Upstream-Name: $pkg_name
 Source: https://github.com/PanWenzheng/$pkg_name
 
 Files: *
-Copyright: 2026 Pan Wenzheng
+Copyright: 2026 Pan Wenzheng and DeepSeek
 License: MIT
 $(sed 's/^/ /' "$repo_dir/LICENSE")
 EOF

@@ -1,5 +1,7 @@
 # DeepL 快捷翻译（Ubuntu GNOME）
 
+![CI](https://github.com/PanWenzheng/deepl-quick-translate/actions/workflows/ci.yml/badge.svg)
+
 > A minimal DeepL popup translator for Ubuntu GNOME: press `Ctrl+Alt+Space`, the clipboard is
 > already in the box, `Enter` translates, `Ctrl+C` copies the result and closes.
 
@@ -142,4 +144,9 @@ tools/portal_probe.py                   # XDG 门户诊断脚本（排查快捷�
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 Pan Wenzheng
+[MIT](LICENSE) © 2026 Pan Wenzheng、DeepSeek
+
+## 作者
+
+- [Pan Wenzheng](https://github.com/PanWenzheng)
+- DeepSeek（协作开发：代码、文档与实测记录）

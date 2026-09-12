@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # 单元测试跑在 ubuntu-24.04 上：测试只覆盖配置解析、快捷键字符串转换、语言方向
+  # 判定与错误体解析，不碰界面，因此 runner 上的 GTK / libadwaita 版本比目标平台
+  # （Ubuntu 26.04 + GNOME 50）旧也没关系——只需要能 import 到类型库。
+  tests:
+    name: 单元测试
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装运行依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-gtk-4.0 gir1.2-secret-1 python3-httpx
+
+      - name: 语法检查
+        run: python3 -m compileall -q app tools packaging
+
+      - name: 单元测试
+        run: python3 -m unittest discover -s tests -v
+
+  # 打包单独跑一遍：这条路径（make-icons.py 渲染 SVG → dpkg-deb 组装）本地跑得通，
+  # 但依赖 gdk-pixbuf 的 SVG 加载器，很容易在别的环境里悄悄坏掉。
+  package:
+    name: 构建 .deb
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-gdkpixbuf-2.0 librsvg2-common
+
+      - name: 构建
+        run: ./packaging/build-deb.sh
+
+      - name: 检查包内容
+        run: |
+          dpkg-deb -I dist/deepl-quick-translate_*.deb
+          dpkg-deb -c dist/deepl-quick-translate_*.deb | grep -E \
+            'usr/bin/deepl-quick-translate|applications/.*\.desktop|hicolor/.*/apps/.*\.(svg|png)|doc/.*/(README\.md|SPEC\.md|copyright)'
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepl-quick-translate-deb
+          path: dist/*.deb
+          if-no-files-found: error
