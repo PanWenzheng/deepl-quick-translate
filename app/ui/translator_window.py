@@ -91,6 +91,8 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         # 剪贴板预填的会话序号：异步结果回来时用它判断是否已经过期
         self._prefill_serial = 0
         self._user_edited = False
+        # 上一次实际填入输入框的剪贴板内容（None 表示"当时没有文本"）
+        self._last_clipboard_text: str | None = None
 
         _install_css()
 
@@ -302,7 +304,13 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         if self._user_edited:
             log.debug("clipboard: prefill dropped (user already typed)")
             return
+        # 剪贴板没变就不动输入框：这样中途切窗口复制别的东西再回来，
+        # 用户已经改过的内容不会被冲掉
+        if text == self._last_clipboard_text:
+            log.debug("clipboard: unchanged, keeping current input")
+            return
         # 没有文本 → 清空输入框（规格 §8）
+        self._last_clipboard_text = text
         self.set_text(text or "")
         log.debug("clipboard: prefill applied (has_text=%s)", bool(text))
 
@@ -330,8 +338,8 @@ class TranslatorWindow(Gtk.ApplicationWindow):
         self._apply_activation_token(activation_token)
         self.present()
         self._input.grab_focus()
-        # 先选中已有内容，等剪贴板结果回来后会整体覆盖
-        self.set_text(self.text)
+        # 这里刻意不动输入框内容与选区：剪贴板若变了，读回来时会整体覆盖并全选；
+        # 若没变，则保留用户的编辑与光标位置。
         self._start_clipboard_prefill()
         log.debug("window: presented")
 
